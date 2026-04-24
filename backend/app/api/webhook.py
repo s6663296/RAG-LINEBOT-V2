@@ -2,7 +2,7 @@ import json
 import logging
 from uuid import uuid4
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Request, BackgroundTasks
 
 from app.core.config import settings
 from app.services.line_bot import line_bot_service
@@ -12,39 +12,8 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-@router.post("/line")
-async def line_webhook(request: Request, x_line_signature: str | None = Header(default=None)):
-    """接收 LINE Webhook，驗證簽章並回覆文字訊息。"""
-    body = await request.body()
-
-    if settings.LINE_ENABLE_SIGNATURE_VALIDATION and not x_line_signature:
-        raise HTTPException(status_code=400, detail="Missing X-Line-Signature header")
-
-    if not line_bot_service.validate_signature(body, x_line_signature or ""):
-        raise HTTPException(status_code=401, detail="Invalid LINE signature")
-
-    try:
-        payload = json.loads(body.decode("utf-8")) if body else {}
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
-
-    events = payload.get("events", [])
-    if not isinstance(events, list):
-        raise HTTPException(status_code=400, detail="Invalid events format")
-
-    webhook_request_id = uuid4().hex
-
-    if not settings.LINE_CHANNEL_ACCESS_TOKEN:
-        logger.error("LINE_CHANNEL_ACCESS_TOKEN is not configured.")
-        return {
-            "status": "accepted",
-            "processed": 0,
-            "message": "LINE Bot token is not configured",
-            "webhook_request_id": webhook_request_id,
-        }
-
-    processed = 0
-
+async def process_line_events(events: list, webhook_request_id: str):
+    """在背景處理 LINE 傳來的事件，避免 Webhook Timeout"""
     for event_index, raw_event in enumerate(events, start=1):
         event = raw_event if isinstance(raw_event, dict) else {}
         message = event.get("message") if isinstance(event.get("message"), dict) else {}
@@ -133,7 +102,6 @@ async def line_webhook(request: Request, x_line_signature: str | None = Header(d
 
         try:
             await line_bot_service.reply_text(reply_token, reply_text)
-            processed += 1
             await line_request_log_service.update_request(
                 request_id,
                 status="completed",
@@ -154,9 +122,48 @@ async def line_webhook(request: Request, x_line_signature: str | None = Header(d
                 reply_text_preview=reply_text,
             )
 
+
+@router.post("/line")
+async def line_webhook(
+    request: Request, 
+    background_tasks: BackgroundTasks,
+    x_line_signature: str | None = Header(default=None)
+):
+    """接收 LINE Webhook，驗證簽章並回覆文字訊息。"""
+    body = await request.body()
+
+    if settings.LINE_ENABLE_SIGNATURE_VALIDATION and not x_line_signature:
+        raise HTTPException(status_code=400, detail="Missing X-Line-Signature header")
+
+    if not line_bot_service.validate_signature(body, x_line_signature or ""):
+        raise HTTPException(status_code=401, detail="Invalid LINE signature")
+
+    try:
+        payload = json.loads(body.decode("utf-8")) if body else {}
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
+
+    events = payload.get("events", [])
+    if not isinstance(events, list):
+        raise HTTPException(status_code=400, detail="Invalid events format")
+
+    webhook_request_id = uuid4().hex
+
+    if not settings.LINE_CHANNEL_ACCESS_TOKEN:
+        logger.error("LINE_CHANNEL_ACCESS_TOKEN is not configured.")
+        return {
+            "status": "accepted",
+            "processed": 0,
+            "message": "LINE Bot token is not configured",
+            "webhook_request_id": webhook_request_id,
+        }
+
+    # 將耗時的訊息處理邏輯放入背景執行
+    background_tasks.add_task(process_line_events, events, webhook_request_id)
+
     return {
         "status": "ok",
-        "processed": processed,
+        "processed": "background",
         "total_events": len(events),
         "webhook_request_id": webhook_request_id,
     }
