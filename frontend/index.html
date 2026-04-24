@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>控制台</title>
+    <link rel="icon" type="image/png" href="favicon.png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&family=Outfit:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Drawer Overlay -->
+        <div id="drawerOverlay" class="drawer-overlay"></div>
+
+        <!-- Navigation Drawer -->
+        <aside id="navDrawer" class="nav-drawer">
+            <div class="drawer-header">
+                <div class="drawer-brand">
+                    <img src="favicon.png" alt="logo" class="brand-logo-img">
+                    <h2>控制台</h2>
+                </div>
+                <button id="closeDrawerBtn" class="btn-close-drawer" aria-label="關閉選單">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                </button>
+            </div>
+            
+            <nav class="drawer-nav">
+                <button class="nav-item active" data-view="chat">
+                    <div class="nav-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 1 1-7.6-11.7 8.38 8.38 0 0 1 3.8.9L21 3z"/></svg>
+                    </div>
+                    <span>測試聊天室</span>
+                </button>
+                <button class="nav-item" data-view="settings">
+                    <div class="nav-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                    </div>
+                    <span>參數設定</span>
+                </button>
+                <button class="nav-item" data-view="monitoring">
+                    <div class="nav-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                    </div>
+                    <span>LINE 監控</span>
+                </button>
+                <button class="nav-item" data-view="knowledge">
+                    <div class="nav-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+                    </div>
+                    <span>知識庫管理</span>
+                </button>
+                <button class="nav-item" data-view="skills">
+                    <div class="nav-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                    </div>
+                    <span>技能管理</span>
+                </button>
+            </nav>
+
+            <div class="drawer-footer">
+                <p>v1.0.0 Stable</p>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <div class="main-wrapper">
+            <header class="app-header">
+                <button id="menuBtn" class="menu-btn" aria-label="開啟選單">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </button>
+                <h1 id="viewTitle">測試聊天室</h1>
+                <div class="header-actions">
+                    <div id="connectionStatus" class="status-badge online">
+                        <span class="status-dot"></span>
+                        <span>系統已連線</span>
+                    </div>
+                    <div id="qdrantStatus" class="status-badge offline" style="margin-left: 10px;">
+                        <span class="status-dot"></span>
+                        <span>Qdrant 離線</span>
+                    </div>
+                </div>
+            </header>
+
+            <div class="view-container">
+                <!-- Chat View -->
+                <main id="chatView" class="view-content active">
+                    <div id="chatMessages" class="chat-messages">
+                        <div class="message system">
+                            <div class="message-content">測試模式已啟動</div>
+                        </div>
+                    </div>
+
+                    <div class="chat-input-container">
+                        <textarea id="userInput" placeholder="輸入訊息..." rows="1"></textarea>
+                        <button id="sendBtn" class="btn btn-send" aria-label="送出">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+                            </svg>
+                        </button>
+                    </div>
+                </main>
+
+                <!-- Settings View -->
+                <section id="settingsView" class="view-content">
+                    <div class="panel-container">
+                        <header class="panel-header">
+                            <h2>.env 參數設定</h2>
+                            <p>調整後端環境變數，儲存後立即生效。</p>
+                        </header>
+
+                        <div class="settings-tabs-wrapper">
+                            <nav class="settings-tabs" id="settingsTabs">
+                                <button class="tab-btn active" data-tab="line">LINE 設定</button>
+                                <button class="tab-btn" data-tab="llm">LLM 模型</button>
+                                <button class="tab-btn" data-tab="rag">RAG 參數</button>
+                                <button class="tab-btn" data-tab="services">服務連線</button>
+                            </nav>
+                        </div>
+                        
+                        <form id="settingsForm" class="settings-form">
+                            <div id="settingsFields" class="settings-fields"></div>
+                            <div class="settings-actions">
+                                <button id="reloadSettingsBtn" class="btn btn-secondary" type="button">重新載入</button>
+                                <button id="saveSettingsBtn" class="btn btn-primary" type="submit">儲存設定</button>
+                            </div>
+                        </form>
+                    </div>
+                </section>
+
+                <!-- Monitoring View -->
+                <section id="monitoringView" class="view-content">
+                    <div class="panel-container">
+                        <header class="panel-header">
+                            <h2>LINE 請求監控</h2>
+                            <p>即時查看多使用者併發請求狀態與日誌。</p>
+                        </header>
+
+                        <div class="logs-controls">
+                            <div class="control-group">
+                                <label class="log-control-inline">
+                                    <span>狀態篩選</span>
+                                    <select id="logStatusFilter" class="setting-control">
+                                        <option value="">全部</option>
+                                        <option value="received">received</option>
+                                        <option value="processing">processing</option>
+                                        <option value="completed">completed</option>
+                                        <option value="failed">failed</option>
+                                        <option value="ignored">ignored</option>
+                                    </select>
+                                </label>
+
+                                <label class="log-control-inline">
+                                    <span>顯示筆數</span>
+                                    <select id="logLimit" class="setting-control">
+                                        <option value="20">20</option>
+                                        <option value="50" selected>50</option>
+                                        <option value="100">100</option>
+                                        <option value="200">200</option>
+                                    </select>
+                                </label>
+                            </div>
+
+                            <div class="control-group">
+                                <label class="log-check">
+                                    <input id="logActiveOnly" type="checkbox" />
+                                    <span>僅顯示進行中</span>
+                                </label>
+
+                                <label class="log-check">
+                                    <input id="logAutoRefresh" type="checkbox" checked />
+                                    <span>自動更新 (3s)</span>
+                                </label>
+                                
+                                <button id="refreshLogsBtn" class="btn btn-secondary" type="button">手動更新</button>
+                            </div>
+                        </div>
+
+                        <div class="log-bulk-actions">
+                            <label class="select-all-container">
+                                <input id="logSelectAll" type="checkbox" />
+                                <span>全選</span>
+                            </label>
+                            <button id="deleteSelectedLogsBtn" class="btn btn-danger" type="button" disabled>刪除選取項目</button>
+                        </div>
+
+                        <div id="logSummary" class="log-summary"></div>
+                        <div id="logList" class="log-list"></div>
+                    </div>
+                </section>
+
+                <!-- Knowledge Base View -->
+                <section id="knowledgeView" class="view-content">
+                    <div class="panel-container">
+                        <header class="panel-header">
+                            <h2>知識庫資料上傳</h2>
+                            <p>上傳檔案或輸入文字，系統將自動切分並向量化儲存至 Qdrant Cloud。</p>
+                        </header>
+
+                        <div class="knowledge-grid">
+                            <!-- Upload Panel -->
+                            <div class="knowledge-card">
+                                <h3>檔案上傳</h3>
+                                <div class="upload-area" id="dropZone">
+                                    <input type="file" id="fileInput" multiple hidden accept=".txt,.md,.pdf,.docx">
+                                    <div class="upload-icon">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+                                    </div>
+                                    <p>點擊或拖曳檔案至此</p>
+                                    <span class="file-info">(支援 .pdf, .docx, .txt, .md)</span>
+                                </div>
+                                <div id="fileList" class="selected-files"></div>
+                            </div>
+
+                            <!-- Config Panel -->
+                            <div class="knowledge-card">
+                                <h3>向量化參數設定</h3>
+                                <div class="settings-fields">
+                                    <div class="setting-item">
+                                        <label for="chunkSize" class="setting-label">Chunk Size (字數)</label>
+                                        <input type="number" id="chunkSize" class="setting-control" value="600" step="100">
+                                    </div>
+                                    <div class="setting-item">
+                                        <label for="overlapSize" class="setting-label">Overlap (重疊字數)</label>
+                                        <input type="number" id="overlapSize" class="setting-control" value="100" step="10">
+                                    </div>
+                                    <div class="setting-item">
+                                        <label for="docSection" class="setting-label">資料分類 (Section)</label>
+                                        <input type="text" id="docSection" class="setting-control" value="general">
+                                    </div>
+                                </div>
+                                <div class="settings-actions-vertical">
+                                    <button id="uploadAllBtn" class="btn btn-primary w-100">開始向量化並上傳</button>
+                                    <button id="initQdrantBtn" class="btn btn-secondary w-100">初始化 Qdrant 集合</button>
+                                    <button id="clearQdrantBtn" class="btn btn-danger w-100">清空所有資料庫內容</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <hr class="divider">
+
+                        <div class="knowledge-search">
+                            <h3>檢索測試</h3>
+                            <div class="search-input-group">
+                                <input type="text" id="ragSearchInput" class="setting-control" placeholder="輸入關鍵字測試檢索結果...">
+                                <button id="ragSearchBtn" class="btn btn-secondary">測試檢索</button>
+                            </div>
+                            <div id="ragSearchResults" class="search-results"></div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Skill Management View -->
+                <section id="skillsView" class="view-content">
+                    <div class="panel-container">
+                        <header class="panel-header">
+                            <h2>技能管理</h2>
+                            <p>檢視當前可用技能，並設定哪些技能要開啟供 LLM 選用。</p>
+                        </header>
+
+                        <hr class="divider">
+
+                        <div id="skillsList" class="skills-grid">
+                            <!-- Skills will be loaded here -->
+                            <div class="loading-placeholder">載入技能中...</div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </div>
+    </div>
+
+    <div id="toastContainer" class="toast-container" aria-live="polite" aria-atomic="true"></div>
+
+    <script src="app.js?v=20260424-skills-toggle"></script>
+</body>
+</html>

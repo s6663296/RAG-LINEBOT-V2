@@ -1,0 +1,6 @@
+{
+  "enabled_skills": [
+    "linebot-reply",
+    "rag"
+  ]
+}
