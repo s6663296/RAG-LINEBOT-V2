@@ -18,10 +18,10 @@ COPY frontend ./frontend
 # 設定環境變數
 ENV PYTHONPATH=/app/backend
 ENV ENV=production
-ENV PORT=8000
+ENV PORT=8080
 
 # 暴露埠號 (Cloud Run 會自動映射，此處僅作標示)
-EXPOSE 8000
+EXPOSE 8080
 
 # 啟動應用程式
 # 使用 python 執行 main.py，內部會調用 uvicorn 並讀取 PORT 環境變數

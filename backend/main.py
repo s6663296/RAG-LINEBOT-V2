@@ -53,7 +53,17 @@ if __name__ == "__main__":
     import uvicorn
     import os
     
-    port = int(os.environ.get("PORT", 8001))
+    # 雲端環境建議優先使用 8080 埠號
+    port = int(os.environ.get("PORT", 8080))
     reload = os.environ.get("ENV", "development") == "development"
     
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=reload)
+    # proxy_headers=True 確保在 Cloud Run 代理後方能正確處理 HTTPS 標頭
+    # forwarded_allow_ips="*" 允許來自代理的轉發
+    uvicorn.run(
+        "main:app", 
+        host="0.0.0.0", 
+        port=port, 
+        reload=reload,
+        proxy_headers=True,
+        forwarded_allow_ips="*"
+    )
