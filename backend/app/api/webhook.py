@@ -114,6 +114,8 @@ async def process_line_events(events: list, webhook_request_id: str):
             metadata={"user_text_length": len(user_text)},
         )
 
+        reply_generation_timed_out = False
+
         if not line_bot_service.is_configured():
             reply_text = "LINE Bot 尚未完成設定，請聯絡管理員。"
         else:
@@ -124,6 +126,7 @@ async def process_line_events(events: list, webhook_request_id: str):
                     timeout=LINE_EVENT_PROCESS_TIMEOUT_SECONDS,
                 )
             except asyncio.TimeoutError:
+                reply_generation_timed_out = True
                 logger.warning("LINE reply generation timed out")
                 await line_request_log_service.update_request(
                     request_id,
@@ -131,6 +134,7 @@ async def process_line_events(events: list, webhook_request_id: str):
                     stage="generate_reply_timeout",
                     metadata={
                         "processing_timeout_seconds": LINE_EVENT_PROCESS_TIMEOUT_SECONDS,
+                        "reply_generation_timed_out": True,
                     },
                 )
                 reply_text = "目前查詢量較大，請稍後再試一次。"
@@ -149,7 +153,7 @@ async def process_line_events(events: list, webhook_request_id: str):
         await line_request_log_service.update_request(
             request_id,
             status="processing",
-            stage="sending_reply",
+            stage="sending_timeout_fallback_reply" if reply_generation_timed_out else "sending_reply",
             reply_text_preview=reply_text,
         )
 
@@ -158,10 +162,13 @@ async def process_line_events(events: list, webhook_request_id: str):
             await line_request_log_service.update_request(
                 request_id,
                 status="completed",
-                stage="completed",
+                stage="completed_with_timeout_fallback" if reply_generation_timed_out else "completed",
                 success=True,
                 finished=True,
                 reply_text_preview=reply_text,
+                metadata={
+                    "reply_generation_timed_out": reply_generation_timed_out,
+                } if reply_generation_timed_out else None,
             )
         except Exception as exc:
             logger.exception("Failed to send LINE reply")
