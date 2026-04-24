@@ -18,6 +18,7 @@ class LineBotService:
     """封裝 LINE Bot 的簽章驗證、LLM 回覆與 Reply API 呼叫。"""
 
     LINE_REPLY_API = "https://api.line.me/v2/bot/message/reply"
+    LINE_LOADING_API = "https://api.line.me/v2/bot/chat/loading/start"
 
     def validate_signature(self, body: bytes, signature: str) -> bool:
         """驗證 LINE Webhook 簽章。"""
@@ -45,14 +46,49 @@ class LineBotService:
         ]
         return all(bool(value) for value in required_values)
 
+    async def show_loading_animation(self, chat_id: str, loading_seconds: int = 20) -> None:
+        """呼叫 LINE Loading Animation API 顯示「...」動畫。"""
+        if not settings.LINE_CHANNEL_ACCESS_TOKEN or not chat_id:
+            return
+
+        headers = {
+            "Authorization": f"Bearer {settings.LINE_CHANNEL_ACCESS_TOKEN}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "chatId": chat_id,
+            "loadingSeconds": loading_seconds,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=settings.LINE_REPLY_TIMEOUT_SECONDS) as client:
+                response = await client.post(self.LINE_LOADING_API, headers=headers, json=payload)
+                response.raise_for_status()
+        except Exception as exc:
+            logger.warning(f"Failed to show loading animation: {exc}")
+
     async def generate_reply_text(self, user_text: str, user_id: str = "") -> str:
         """使用 AgentService 執行完整 RAG 流程並產生回覆。"""
         try:
+            async def status_callback(msg: str):
+                """當 Agent 改變狀態時，重新觸發 LINE 動畫維持倒數計時。"""
+                if user_id:
+                    await self.show_loading_animation(user_id)
+
             # 獲取對話歷史
             history = await line_request_log_service.get_user_history(
                 user_id, limit=settings.LLM_CONTEXT_WINDOW_SIZE
             )
-            content = await agent_service.generate_response(user_text, history=history)
+            
+            # 開始處理前先觸發一次動畫
+            if user_id:
+                await self.show_loading_animation(user_id)
+
+            content = await agent_service.generate_response(
+                user_text, 
+                history=history,
+                status_callback=status_callback
+            )
             return content[:5000]
         except Exception as exc:
             logger.exception("Failed to generate LINE reply via AgentService")
