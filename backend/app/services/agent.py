@@ -55,12 +55,18 @@ class AgentService:
 
             configured_system_prompt = self._get_configured_system_prompt()
             if configured_system_prompt:
+                # 注入使用者設定的 System Prompt，但在此階段強化「必須優先工具」的指令
                 messages.append({
                     "role": "system",
                     "content": (
-                        "The following is the global System Prompt from the UI settings. You MUST adhere to its personality and style."
-                        "However, you are currently in the Agent decision-making phase, so your output format MUST still be a single pure JSON object.\n\n"
-                        f"{configured_system_prompt}"
+                        "User-Defined Style & Personality:\n"
+                        f"{configured_system_prompt}\n\n"
+                        "--- IMPORTANT INSTRUCTIONS FOR AGENT PHASE ---\n"
+                        "1. You are currently in the DECISION-MAKING phase. Your goal is to determine IF you need to use tools (like RAG).\n"
+                        "2. If the user question requires information from the knowledge base, you MUST call READ_SKILL and then CALL_RAG.\n"
+                        "3. DO NOT output the fallback message ('Sorry, I cannot answer...') as natural language now. "
+                        "You can only use it later in the 'answer' field of ANSWER_DIRECTLY IF AND ONLY IF you have already performed retrieval and found no info.\n"
+                        "4. ALWAYS output a single JSON object. DO NOT output plain text."
                     )
                 })
             
