@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from app.api import chat, env_settings, request_logs, webhook, skills
 from app.api.v1.endpoints import rag
 from app.core.config import settings
@@ -40,11 +41,6 @@ app.include_router(
 app.include_router(webhook.router, prefix="/webhook", tags=["webhook"])
 app.include_router(request_logs.router, prefix=f"{settings.API_V1_STR}/logs", tags=["logs"])
 
-# 掛載前端靜態檔案 (假設 frontend 資料夾與 backend 在同一層)
-frontend_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
-if os.path.exists(frontend_path):
-    app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
-
 @app.get("/health")
 async def health_check():
     """健康檢查端點，供 ClawCloud Run 監測容器是否正常。"""
@@ -53,7 +49,17 @@ async def health_check():
 
 @app.get("/")
 async def root():
+    frontend_index = os.path.join(frontend_path, "index.html")
+    if os.path.exists(frontend_index):
+        return FileResponse(frontend_index)
     return {"message": "Modular LLM API is running", "docs": "/docs"}
+
+
+# 掛載前端靜態檔案 (假設 frontend 資料夾與 backend 在同一層)
+# 改用 /static 提供靜態資源，避免攔截 /health 等平台健康檢查端點
+frontend_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
+if os.path.exists(frontend_path):
+    app.mount("/static", StaticFiles(directory=frontend_path), name="frontend-static")
 
 if __name__ == "__main__":
     import uvicorn
