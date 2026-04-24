@@ -45,6 +45,12 @@ frontend_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "fronte
 if os.path.exists(frontend_path):
     app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
 
+@app.get("/health")
+async def health_check():
+    """健康檢查端點，供 ClawCloud Run 監測容器是否正常。"""
+    return {"status": "ok"}
+
+
 @app.get("/")
 async def root():
     return {"message": "Modular LLM API is running", "docs": "/docs"}
@@ -65,5 +71,7 @@ if __name__ == "__main__":
         port=port, 
         reload=reload,
         proxy_headers=True,
-        forwarded_allow_ips="*"
+        forwarded_allow_ips="*",
+        timeout_keep_alive=120,  # 保持連線較長，避免 Cloud 代理中斷
+        limit_max_requests=1000,  # 每 1000 次請求後自動重啟 worker，防止記憶體洩漏
     )

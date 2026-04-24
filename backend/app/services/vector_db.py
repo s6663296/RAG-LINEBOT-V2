@@ -29,6 +29,7 @@ class VectorDBService:
             url=settings.QDRANT_URL,
             api_key=settings.QDRANT_API_KEY,
             timeout=settings.QDRANT_REQUEST_TIMEOUT_SECONDS,
+            prefer_grpc=False,  # 使用 REST (HTTP) 模式，大幅降低記憶體用量
         )
         self.collection_name = settings.QDRANT_COLLECTION_NAME
 
