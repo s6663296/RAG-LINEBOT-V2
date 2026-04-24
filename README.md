@@ -47,7 +47,7 @@ docker run -p 8000:8000 --env-file .env rag-linebot
 ```
 
 ### 3. Cloud Run 設定建議
-- **容器埠號**：8000 (預設)
+- **容器埠號**：8080 (預設)
 - **持久化儲存**：建議掛載雲端磁碟至 `/data` 路徑，並將 `DATABASE_URL` 指向該路徑下的檔案。
 - **資源限制**：建議至少 512MB RAM。
 
@@ -58,7 +58,7 @@ docker run -p 8000:8000 --env-file .env rag-linebot
 2. 安裝依賴：`pip install -r requirements.txt`
 3. 複製 `.env.example` 為 `.env` 並填寫必要金鑰。
 4. 啟動服務：`python main.py`
-5. 訪問 `http://localhost:8001` 查看控制台。
+5. 訪問 `http://localhost:8080` 查看控制台。
 
 ## 開發者
 - GitHub: [s6663296](https://github.com/s6663296)
