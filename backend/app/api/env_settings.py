@@ -5,10 +5,10 @@ from dotenv import dotenv_values, set_key
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.core.config import settings
+from app.core.config import DATA_DIR, settings
 
 router = APIRouter()
-ENV_FILE_PATH = Path(__file__).resolve().parents[2] / ".env"
+ENV_FILE_PATH = DATA_DIR / ".env"
 
 
 class EnvSettingItem(BaseModel):
@@ -171,6 +171,7 @@ EDITABLE_ENV_KEYS = {item["key"] for item in ENV_SETTING_DEFINITIONS}
 
 
 def _ensure_env_file_exists() -> None:
+    ENV_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
     if not ENV_FILE_PATH.exists():
         ENV_FILE_PATH.write_text("", encoding="utf-8")
 

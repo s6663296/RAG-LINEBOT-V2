@@ -1,4 +1,12 @@
+import os
+from pathlib import Path
+
 from pydantic_settings import BaseSettings
+
+ROOT_DIR = Path(__file__).resolve().parents[3]
+DATA_DIR = Path(os.getenv("DATA_DIR", str(ROOT_DIR / "data")))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+ENV_FILES = [str(ROOT_DIR / "backend" / ".env"), str(DATA_DIR / ".env")]
 
 
 class Settings(BaseSettings):
@@ -61,7 +69,7 @@ Note: ONLY output pure JSON. DO NOT include any explanatory text.
 
     class Config:
         case_sensitive = True
-        env_file = ".env"
+        env_file = tuple(ENV_FILES)
 
 
 settings = Settings()
