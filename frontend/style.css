@@ -239,6 +239,9 @@ body {
     font-size: 1.3rem;
     font-weight: 600;
     flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .header-actions {
@@ -1115,6 +1118,19 @@ input:checked + .slider:before {
 @media (max-width: 900px) {
     .knowledge-grid {
         grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 600px) {
+    .status-badge span:not(.status-dot) {
+        display: none;
+    }
+    .app-header {
+        padding: 0 1rem;
+        gap: 0.75rem;
+    }
+    .status-badge {
+        padding: 0.4rem;
     }
 }
 
