@@ -1,7 +1,6 @@
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Form
 from pydantic import BaseModel
 from typing import List, Optional
-import asyncio
 import io
 import fitz  # PyMuPDF
 from docx import Document
@@ -25,25 +24,14 @@ class IndexRequest(BaseModel):
 @router.get("/health")
 async def qdrant_health():
     """
-    檢查 Qdrant 連線狀態，避免同步 I/O 阻塞整個事件迴圈。
+    檢查 Qdrant 連線狀態。
     """
-    if not settings.QDRANT_URL:
-        return {"status": "offline", "message": "Qdrant URL not configured"}
-
-    if not vector_db_service.client:
-        return {"status": "offline", "message": "Qdrant client not initialized"}
-
     try:
-        await asyncio.wait_for(
-            asyncio.to_thread(vector_db_service.client.get_collections),
-            timeout=settings.QDRANT_REQUEST_TIMEOUT_SECONDS,
-        )
+        # 嘗試獲取 Collections 列表以驗證連線
+        vector_db_service.client.get_collections()
         return {"status": "online", "message": "Qdrant connection active"}
-    except asyncio.TimeoutError:
-        logger.warning("Qdrant health check timed out")
-        return {"status": "offline", "message": "Qdrant health check timed out"}
     except Exception as e:
-        logger.warning("Qdrant health check failed: %s", e)
+        print(f"Qdrant Health Error: {str(e)}")
         return {"status": "offline", "message": str(e)}
 
 @router.get("/init")

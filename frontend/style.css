@@ -277,15 +277,6 @@ body {
     box-shadow: 0 0 8px #10b981;
 }
 
-.status-badge.pending {
-    color: #fbbf24;
-}
-
-.status-badge.pending .status-dot {
-    background: #fbbf24;
-    box-shadow: 0 0 8px #fbbf24;
-}
-
 .status-badge.offline {
     color: #f87171;
 }
@@ -815,11 +806,6 @@ input:checked + .slider:before {
     transition: border-color 0.2s;
 }
 
-.log-item.log-item-warning {
-    border-color: rgba(251, 191, 36, 0.28);
-    box-shadow: inset 0 0 0 1px rgba(251, 191, 36, 0.08);
-}
-
 .log-item:hover {
     border-color: rgba(56, 189, 248, 0.3);
 }
@@ -847,18 +833,6 @@ input:checked + .slider:before {
     display: flex;
     justify-content: space-between;
     align-items: center;
-}
-
-.log-status-badge {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    flex-wrap: wrap;
-}
-
-.log-stage {
-    font-size: 0.75rem;
-    color: var(--text-secondary);
 }
 
 .btn-delete-log {
@@ -896,9 +870,7 @@ input:checked + .slider:before {
 .status-received { background: rgba(56, 189, 248, 0.1); color: #38bdf8; }
 .status-processing { background: rgba(251, 191, 36, 0.1); color: #fbbf24; }
 .status-completed { background: rgba(52, 211, 153, 0.1); color: #34d399; }
-.status-warning { background: rgba(251, 191, 36, 0.12); color: #fbbf24; }
 .status-failed { background: rgba(248, 113, 113, 0.1); color: #f87171; }
-.status-ignored { background: rgba(148, 163, 184, 0.1); color: #94a3b8; }
 
 .log-lines {
     display: grid;
@@ -919,16 +891,6 @@ input:checked + .slider:before {
     word-break: break-all;
 }
 
-.log-warning {
-    background: rgba(251, 191, 36, 0.08);
-    color: #fcd34d;
-    border: 1px solid rgba(251, 191, 36, 0.2);
-    padding: 0.75rem;
-    border-radius: 8px;
-    font-size: 0.85rem;
-    margin-top: 0.5rem;
-}
-
 .log-preview {
     background: rgba(15, 23, 42, 0.4);
     padding: 0.75rem;
@@ -936,16 +898,6 @@ input:checked + .slider:before {
     font-size: 0.85rem;
     margin-top: 0.5rem;
     border: 1px solid var(--border-color);
-}
-
-.log-error {
-    background: rgba(248, 113, 113, 0.08);
-    color: #fda4af;
-    border: 1px solid rgba(248, 113, 113, 0.18);
-    padding: 0.75rem;
-    border-radius: 8px;
-    font-size: 0.85rem;
-    margin-top: 0.5rem;
 }
 
 /* --- Toast Notifications --- */

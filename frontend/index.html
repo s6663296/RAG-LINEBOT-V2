@@ -4,11 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>控制台</title>
-    <link rel="icon" type="image/png" href="/static/favicon.png">
+    <link rel="icon" type="image/png" href="favicon.png">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&family=Outfit:wght@400;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <div class="app-container">
@@ -19,7 +19,7 @@
         <aside id="navDrawer" class="nav-drawer">
             <div class="drawer-header">
                 <div class="drawer-brand">
-                    <img src="/static/favicon.png" alt="logo" class="brand-logo-img">
+                    <img src="favicon.png" alt="logo" class="brand-logo-img">
                     <h2>控制台</h2>
                 </div>
                 <button id="closeDrawerBtn" class="btn-close-drawer" aria-label="關閉選單">
@@ -79,9 +79,9 @@
                         <span class="status-dot"></span>
                         <span>系統已連線</span>
                     </div>
-                    <div id="qdrantStatus" class="status-badge pending" style="margin-left: 10px;">
+                    <div id="qdrantStatus" class="status-badge offline" style="margin-left: 10px;">
                         <span class="status-dot"></span>
-                        <span>Qdrant 待檢查</span>
+                        <span>Qdrant 離線</span>
                     </div>
                 </div>
             </header>
@@ -276,6 +276,6 @@
 
     <div id="toastContainer" class="toast-container" aria-live="polite" aria-atomic="true"></div>
 
-    <script src="/static/app.js?v=20260424-skills-toggle"></script>
+    <script src="app.js?v=20260424-skills-toggle"></script>
 </body>
 </html>

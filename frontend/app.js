@@ -43,7 +43,7 @@ const API_FALLBACK_ORIGINS = ['http://localhost:8001', 'http://127.0.0.1:8001'];
 const SETTINGS_API_URL = '/api/v1/settings/env';
 const LOGS_API_URL = '/api/v1/logs/line/requests';
 const SKILLS_API_URL = '/api/v1/skills';
-const LOG_AUTO_REFRESH_MS = 30000;
+const LOG_AUTO_REFRESH_MS = 3000;
 const API_REQUEST_TIMEOUT_MS = 30000;
 
 const messages = [];
@@ -52,7 +52,6 @@ let logRefreshTimer = null;
 let lastLogErrorMessage = '';
 let selectedLogIds = new Set();
 let currentLogItems = [];
-let currentViewId = 'chat';
 
 function getApiRequestUrls(url) {
     if (typeof url !== 'string' || !url.startsWith('/api/')) {
@@ -157,8 +156,6 @@ function switchView(viewId) {
     // Close drawer on mobile/tablet after selection
     closeDrawer();
 
-    currentViewId = viewId;
-
     // Trigger data loading if needed
     if (viewId === 'settings') {
         loadSettings();
@@ -168,11 +165,7 @@ function switchView(viewId) {
     } else if (viewId === 'skills') {
         loadSkills();
         loadSkillSettings();
-    } else if (viewId === 'knowledge') {
-        updateQdrantStatus();
     }
-
-    setupLogAutoRefresh();
 }
 
 function openDrawer() {
@@ -498,31 +491,6 @@ function renderLogSummary(summary = {}) {
     `).join('');
 }
 
-function hasTimeoutFallback(item = {}) {
-    return Boolean(
-        item?.metadata?.reply_generation_timed_out
-        || item?.stage === 'generate_reply_timeout'
-        || item?.stage === 'sending_timeout_fallback_reply'
-        || item?.stage === 'completed_with_timeout_fallback'
-    );
-}
-
-function getLogVisualState(item = {}) {
-    if (hasTimeoutFallback(item)) return 'warning';
-    return item.status || 'received';
-}
-
-function formatLogStage(item = {}) {
-    const stage = item.stage || '-';
-    const stageLabels = {
-        generate_reply_timeout: '回覆產生逾時',
-        sending_timeout_fallback_reply: '發送逾時替代回覆',
-        completed_with_timeout_fallback: '已完成（逾時替代回覆）',
-    };
-
-    return stageLabels[stage] || stage;
-}
-
 function renderLogList(items = []) {
     if (!logList) return;
     if (items.length === 0) {
@@ -530,45 +498,31 @@ function renderLogList(items = []) {
         return;
     }
 
-    logList.innerHTML = items.map(item => {
-        const visualState = getLogVisualState(item);
-        const timeoutFallback = hasTimeoutFallback(item);
-        const requestId = escapeHtml(item.request_id || '');
-        const statusText = escapeHtml(item.status || 'received');
-        const stageText = escapeHtml(formatLogStage(item));
-        const lineUserId = escapeHtml(item.line_user_id || '-');
-        const createdAt = escapeHtml(formatDateTime(item.created_at));
-        const userTextPreview = item.user_text_preview ? escapeHtml(item.user_text_preview) : '';
-        const replyTextPreview = item.reply_text_preview ? escapeHtml(item.reply_text_preview) : '';
-        const errorText = item.error ? escapeHtml(item.error) : '';
-
-        return `
-        <article class="log-item log-item-${visualState}" data-request-id="${requestId}">
+    logList.innerHTML = items.map(item => `
+        <article class="log-item" data-request-id="${item.request_id}">
             <div class="log-item-header">
                 <div class="log-item-checkbox">
-                    <input type="checkbox" data-request-id="${requestId}" ${selectedLogIds.has(item.request_id) ? 'checked' : ''} />
+                    <input type="checkbox" data-request-id="${item.request_id}" ${selectedLogIds.has(item.request_id) ? 'checked' : ''} />
                 </div>
                 <div class="log-status-container">
                     <div class="log-status-badge">
-                        <span class="log-status status-${visualState}">${statusText}</span>
-                        <span class="log-stage">${stageText}</span>
+                        <span class="log-status status-${item.status || 'received'}">${item.status || 'received'}</span>
+                        <span class="log-stage">${item.stage || '-'}</span>
                     </div>
-                    <button class="btn-delete-log" data-request-id="${requestId}" title="刪除此日誌">
+                    <button class="btn-delete-log" data-request-id="${item.request_id}" title="刪除此日誌">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6"/></svg>
                     </button>
                 </div>
             </div>
             <div class="log-lines">
-                <div class="log-line"><span>使用者</span><strong>${lineUserId}</strong></div>
-                <div class="log-line"><span>建立時間</span><strong>${createdAt}</strong></div>
+                <div class="log-line"><span>使用者</span><strong>${item.line_user_id || '-'}</strong></div>
+                <div class="log-line"><span>建立時間</span><strong>${formatDateTime(item.created_at)}</strong></div>
             </div>
-            ${timeoutFallback ? '<div class="log-warning">⚠ LLM 回覆產生逾時，這次改以系統忙碌訊息完成 LINE 回覆。</div>' : ''}
-            ${userTextPreview ? `<div class="log-preview">👤 ${userTextPreview}</div>` : ''}
-            ${replyTextPreview ? `<div class="log-preview">🤖 ${replyTextPreview}</div>` : ''}
-            ${errorText ? `<div class="log-error">⚠ ${errorText}</div>` : ''}
+            ${item.user_text_preview ? `<div class="log-preview">👤 ${item.user_text_preview}</div>` : ''}
+            ${item.reply_text_preview ? `<div class="log-preview">🤖 ${item.reply_text_preview}</div>` : ''}
+            ${item.error ? `<div class="log-error">⚠ ${item.error}</div>` : ''}
         </article>
-    `;
-    }).join('');
+    `).join('');
 
     // Attach event listeners to checkboxes
     logList.querySelectorAll('.log-item-checkbox input').forEach(cb => {
@@ -707,7 +661,7 @@ async function loadRequestLogs({ manual = false } = {}) {
 
 function setupLogAutoRefresh() {
     if (logRefreshTimer) clearInterval(logRefreshTimer);
-    if (logAutoRefresh && logAutoRefresh.checked && currentViewId === 'monitoring') {
+    if (logAutoRefresh && logAutoRefresh.checked) {
         logRefreshTimer = setInterval(() => loadRequestLogs(), LOG_AUTO_REFRESH_MS);
     }
 }
@@ -953,7 +907,7 @@ async function updateSystemStatus() {
     if (!connectionStatusEl) return;
     
     try {
-        const response = await fetch('/health', { cache: 'no-store' });
+        const response = await fetch('/');
         const text = connectionStatusEl.querySelector('span:not(.status-dot)');
         
         if (response.ok) {
@@ -974,34 +928,28 @@ async function updateSystemStatus() {
 
 async function updateQdrantStatus() {
     if (!qdrantStatusEl) return;
-
-    const text = qdrantStatusEl.querySelector('span:not(.status-dot)');
-    if (!text) return;
-
-    if (currentViewId !== 'knowledge') {
-        qdrantStatusEl.className = 'status-badge pending';
-        text.textContent = 'Qdrant 待檢查';
-        qdrantStatusEl.title = '切換到知識庫頁面時才會檢查 Qdrant 狀態';
-        return;
-    }
     
     try {
-        const { data } = await fetchJsonWithTimeout('/api/v1/rag/health', { cache: 'no-store' });
+        const response = await fetch('/api/v1/rag/health');
+        const data = await response.json();
+        const text = qdrantStatusEl.querySelector('span:not(.status-dot)');
         
-        if (data?.status === 'online') {
+        if (data.status === 'online') {
             qdrantStatusEl.className = 'status-badge online';
             text.textContent = 'Qdrant 已連線';
             qdrantStatusEl.title = '連線正常';
         } else {
-            const errMsg = data?.message || data?.detail || '未知錯誤';
+            const errMsg = data.message || data.detail || '未知錯誤';
             qdrantStatusEl.className = 'status-badge offline';
             text.textContent = 'Qdrant 離線';
             qdrantStatusEl.title = errMsg;
         }
     } catch (error) {
-        qdrantStatusEl.className = 'status-badge offline';
-        text.textContent = 'Qdrant 連線失敗';
-        qdrantStatusEl.title = error.message || 'Qdrant 狀態檢查失敗';
+        if (qdrantStatusEl) {
+            qdrantStatusEl.className = 'status-badge offline';
+            const text = qdrantStatusEl.querySelector('span:not(.status-dot)');
+            text.textContent = 'Qdrant 斷線';
+        }
     }
 }
 
@@ -1170,17 +1118,14 @@ async function updateSkillSettings() {
 // }
 
 // Initial data load
+loadSettings();
+loadRequestLogs();
+setupLogAutoRefresh();
 setupKnowledgeBase();
-
-const initialActiveView = document.querySelector('.nav-item.active')?.dataset.view || 'chat';
-switchView(initialActiveView);
+loadSkills();
 
 // Status Check Initialization
 updateSystemStatus();
 updateQdrantStatus();
-setInterval(updateSystemStatus, 30000); // Check every 30 seconds
-setInterval(() => {
-    if (currentViewId === 'knowledge') {
-        updateQdrantStatus();
-    }
-}, 30000); // Only check Qdrant periodically when knowledge view is active
+setInterval(updateSystemStatus, 10000); // Check every 10 seconds
+setInterval(updateQdrantStatus, 10000); // Check every 10 seconds

@@ -24,34 +24,21 @@ class VectorDBService:
     def reload_from_settings(self):
         """
         依照目前 runtime settings 重建 Qdrant client。
-        未設定 Qdrant 時保留為 None，避免無效連線拖慢 API。
         """
-        self.collection_name = settings.QDRANT_COLLECTION_NAME
-        qdrant_url = settings.QDRANT_URL.strip() if settings.QDRANT_URL else ""
-
-        if not qdrant_url:
-            self.client = None
-            return
-
         self.client = QdrantClient(
-            url=qdrant_url,
+            url=settings.QDRANT_URL,
             api_key=settings.QDRANT_API_KEY,
             timeout=settings.QDRANT_REQUEST_TIMEOUT_SECONDS,
             prefer_grpc=False,  # 使用 REST (HTTP) 模式，大幅降低記憶體用量
         )
-
-    def _require_client(self):
-        if not self.client:
-            raise RuntimeError("Qdrant 尚未設定，請先提供 QDRANT_URL。")
-        return self.client
+        self.collection_name = settings.QDRANT_COLLECTION_NAME
 
     def init_collection(self):
         """
         初始化 Collection，設定 Dense 與 Sparse 向量參數。
         """
-        client = self._require_client()
         # 檢查 Collection 是否已存在
-        collections = client.get_collections().collections
+        collections = self.client.get_collections().collections
         exists = any(c.name == self.collection_name for c in collections)
         
         if not exists:
@@ -63,8 +50,7 @@ class VectorDBService:
         """
         刪除並重新建立 Collection (清空所有資料)。
         """
-        client = self._require_client()
-        client.delete_collection(collection_name=self.collection_name)
+        self.client.delete_collection(collection_name=self.collection_name)
         self.create_new_collection()
         return f"Collection '{self.collection_name}' has been cleared and recreated."
 
@@ -72,8 +58,7 @@ class VectorDBService:
         """
         建立新的 Collection 結構。
         """
-        client = self._require_client()
-        client.create_collection(
+        self.client.create_collection(
             collection_name=self.collection_name,
             vectors_config={
                 "dense": VectorParams(
@@ -91,7 +76,6 @@ class VectorDBService:
         批次插入數據。
         points 格式: [{id, dense, sparse, payload}]
         """
-        client = self._require_client()
         point_structs = []
         for p in points:
             point_structs.append(
@@ -108,7 +92,7 @@ class VectorDBService:
                 )
             )
         
-        client.upsert(
+        self.client.upsert(
             collection_name=self.collection_name,
             points=point_structs,
         )
@@ -119,8 +103,7 @@ class VectorDBService:
         這裡實作 RRF 或簡單的多路檢索合併。
         目前 Qdrant 支援 Prefetch 與 RRF 融合。
         """
-        client = self._require_client()
-        dense_results = client.search(
+        dense_results = self.client.search(
             collection_name=self.collection_name,
             query_vector=("dense", dense_vector),
             limit=limit,
@@ -137,7 +120,7 @@ class VectorDBService:
             values=list(sparse_vector.values())
         )
 
-        sparse_results = client.search(
+        sparse_results = self.client.search(
             collection_name=self.collection_name,
             query_vector=("sparse", qv_sparse),
             limit=limit,
