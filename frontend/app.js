@@ -43,7 +43,7 @@ const API_FALLBACK_ORIGINS = ['http://localhost:8001', 'http://127.0.0.1:8001'];
 const SETTINGS_API_URL = '/api/v1/settings/env';
 const LOGS_API_URL = '/api/v1/logs/line/requests';
 const SKILLS_API_URL = '/api/v1/skills';
-const LOG_AUTO_REFRESH_MS = 3000;
+const LOG_AUTO_REFRESH_MS = 30000;
 const API_REQUEST_TIMEOUT_MS = 30000;
 
 const messages = [];
@@ -52,6 +52,7 @@ let logRefreshTimer = null;
 let lastLogErrorMessage = '';
 let selectedLogIds = new Set();
 let currentLogItems = [];
+let currentViewId = 'chat';
 
 function getApiRequestUrls(url) {
     if (typeof url !== 'string' || !url.startsWith('/api/')) {
@@ -156,6 +157,8 @@ function switchView(viewId) {
     // Close drawer on mobile/tablet after selection
     closeDrawer();
 
+    currentViewId = viewId;
+
     // Trigger data loading if needed
     if (viewId === 'settings') {
         loadSettings();
@@ -165,7 +168,11 @@ function switchView(viewId) {
     } else if (viewId === 'skills') {
         loadSkills();
         loadSkillSettings();
+    } else if (viewId === 'knowledge') {
+        updateQdrantStatus();
     }
+
+    setupLogAutoRefresh();
 }
 
 function openDrawer() {
@@ -661,7 +668,7 @@ async function loadRequestLogs({ manual = false } = {}) {
 
 function setupLogAutoRefresh() {
     if (logRefreshTimer) clearInterval(logRefreshTimer);
-    if (logAutoRefresh && logAutoRefresh.checked) {
+    if (logAutoRefresh && logAutoRefresh.checked && currentViewId === 'monitoring') {
         logRefreshTimer = setInterval(() => loadRequestLogs(), LOG_AUTO_REFRESH_MS);
     }
 }
@@ -907,7 +914,7 @@ async function updateSystemStatus() {
     if (!connectionStatusEl) return;
     
     try {
-        const response = await fetch('/');
+        const response = await fetch('/health', { cache: 'no-store' });
         const text = connectionStatusEl.querySelector('span:not(.status-dot)');
         
         if (response.ok) {
@@ -928,9 +935,17 @@ async function updateSystemStatus() {
 
 async function updateQdrantStatus() {
     if (!qdrantStatusEl) return;
+
+    if (currentViewId !== 'knowledge') {
+        qdrantStatusEl.className = 'status-badge offline';
+        const text = qdrantStatusEl.querySelector('span:not(.status-dot)');
+        text.textContent = 'Qdrant 待檢查';
+        qdrantStatusEl.title = '切換到知識庫頁面時才會檢查 Qdrant 狀態';
+        return;
+    }
     
     try {
-        const response = await fetch('/api/v1/rag/health');
+        const response = await fetch('/api/v1/rag/health', { cache: 'no-store' });
         const data = await response.json();
         const text = qdrantStatusEl.querySelector('span:not(.status-dot)');
         
@@ -949,6 +964,7 @@ async function updateQdrantStatus() {
             qdrantStatusEl.className = 'status-badge offline';
             const text = qdrantStatusEl.querySelector('span:not(.status-dot)');
             text.textContent = 'Qdrant 斷線';
+            qdrantStatusEl.title = error.message || 'Qdrant 狀態檢查失敗';
         }
     }
 }
@@ -1118,14 +1134,17 @@ async function updateSkillSettings() {
 // }
 
 // Initial data load
-loadSettings();
-loadRequestLogs();
-setupLogAutoRefresh();
 setupKnowledgeBase();
-loadSkills();
+
+const initialActiveView = document.querySelector('.nav-item.active')?.dataset.view || 'chat';
+switchView(initialActiveView);
 
 // Status Check Initialization
 updateSystemStatus();
 updateQdrantStatus();
-setInterval(updateSystemStatus, 10000); // Check every 10 seconds
-setInterval(updateQdrantStatus, 10000); // Check every 10 seconds
+setInterval(updateSystemStatus, 30000); // Check every 30 seconds
+setInterval(() => {
+    if (currentViewId === 'knowledge') {
+        updateQdrantStatus();
+    }
+}, 30000); // Only check Qdrant periodically when knowledge view is active
