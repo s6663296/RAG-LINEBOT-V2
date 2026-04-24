@@ -2,6 +2,14 @@
 
 這是一個基於 FastAPI 與 RAG (Retrieval-Augmented Generation) 技術的 LINE Bot 服務。專案整合了向量資料庫 Qdrant 與 大語言模型 (LLM)，並提供一個現代化的 Web 管理控制台。
 
+## 系統截圖
+
+<p align="center">
+  <img src="assets/settings.png" width="45%" alt="參數設定介面">
+  &nbsp;
+  <img src="assets/knowledge.png" width="45%" alt="知識庫管理介面">
+</p>
+
 ## 功能特點
 - **RAG 問答系統**：結合 Qdrant 與 Embedding API (SiliconFlow)，提供精準的知識庫檢索與生成。
 - **LINE Bot 整合**：完整的 Webhook 處理流程，支援非同步回覆。
