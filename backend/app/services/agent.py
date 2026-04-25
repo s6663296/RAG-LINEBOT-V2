@@ -32,8 +32,12 @@ class AgentService:
         all_skills = skill_service.get_skill_list()
         skill_settings = skill_service.get_settings()
         enabled_skill_ids = set(skill_settings.get("enabled_skills", []))
-        available_skills = [skill for skill in all_skills if skill["skill_id"] in enabled_skill_ids]
+        global_style_skills = ["linebot-reply"]
+        available_skills = [skill for skill in all_skills if skill["skill_id"] in enabled_skill_ids and skill["skill_id"] not in global_style_skills]
         available_skill_ids = {skill["skill_id"] for skill in available_skills}
+        
+        # 取得全域風格內容
+        global_style_content = self._get_global_style_content()
         
         # 初始系統提示詞 (Router 模式)
         system_prompt = self._get_router_prompt(available_skills)
@@ -54,13 +58,19 @@ class AgentService:
             messages = [{"role": "system", "content": system_prompt}]
 
             configured_system_prompt = self._get_configured_system_prompt()
+            
+            combined_system_instructions = ""
             if configured_system_prompt:
-                # 注入使用者設定的 System Prompt，但在此階段強化「必須優先工具」的指令
+                combined_system_instructions += f"User-Defined Style & Personality:\n{configured_system_prompt}\n\n"
+            if global_style_content:
+                combined_system_instructions += f"Global Reply Rules (MUST STRICTLY FOLLOW):\n{global_style_content}\n\n"
+                
+            if combined_system_instructions:
+                # 注入使用者設定與全域風格，並在此階段強化「必須優先工具」的指令
                 messages.append({
                     "role": "system",
                     "content": (
-                        "User-Defined Style & Personality:\n"
-                        f"{configured_system_prompt}\n\n"
+                        f"{combined_system_instructions}"
                         "--- IMPORTANT INSTRUCTIONS FOR AGENT PHASE ---\n"
                         "1. You are currently in the DECISION-MAKING phase. Your goal is to determine IF you need to use tools (like RAG).\n"
                         "2. If the user question requires information from the knowledge base, you MUST call READ_SKILL and then CALL_RAG.\n"
@@ -128,6 +138,8 @@ class AgentService:
                     return "I am unable to complete the retrieval process at the moment. Please try a more specific question."
                 
                 logger.info(f"Step {i+1} Action: {action} (Reason: {reason})")
+                if status_callback:
+                    await status_callback(f"步驟 {i+1}: {action} - {reason}")
 
                 if action == "ANSWER_DIRECTLY":
                     answer = action_data.get("answer", "I cannot answer this question directly.")
@@ -208,7 +220,7 @@ class AgentService:
                     if status_callback:
                         await status_callback(f"正在檢索資料: {query}...")
                     
-                    retrieved_context = await self._execute_rag(query, top_k)
+                    retrieved_context = await self._execute_rag(query, top_k, status_callback)
                     rag_retrieval_done = True
                     continue
 
@@ -275,23 +287,57 @@ class AgentService:
             f"rewritten_query: {processed_query.rewritten_query}"
         )
 
-    async def _execute_rag(self, query: str, top_k: int = 5) -> str:
+    async def _execute_rag(self, query: str, top_k: int = 5, status_callback: Optional[Any] = None) -> str:
         """
-        執行 RAG 檢索邏輯。
+        執行 RAG 檢索邏輯：
+        1. 混合檢索 (Hybrid Search) + RRF 融合。
+        2. Rerank (重排) 以提升 Top-K 準確度。
         """
+        from app.services.rerank import rerank_service
+
         dense, sparse = await embedding_service.get_embeddings(query)
-        candidate_limit = max(top_k, top_k * max(1, int(settings.RAG_CANDIDATE_MULTIPLIER)))
+        
+        # 第一階段：取回較多候選者 (Candidates)
+        # 如果啟用了 Rerank，我們取回 top_k * 4 個候選者來重排
+        candidate_multiplier = int(getattr(settings, "RAG_CANDIDATE_MULTIPLIER", 4))
+        candidate_limit = top_k * candidate_multiplier
+        
         raw_results = vector_db_service.search_hybrid(dense, sparse, limit=candidate_limit)
         
-        # Rerank 與門檻過濾
-        sorted_results = sorted(raw_results, key=lambda x: x.score, reverse=True)
+        if not raw_results:
+            return "(No relevant information found)"
+
+        # 第二階段：Rerank
+        if settings.RAG_ENABLE_RERANK and len(raw_results) > 1:
+            if status_callback:
+                await status_callback(f"正在進行 Rerank 重排 (BGE-M3)...")
+            documents = [res.payload.get("text", "") for res in raw_results]
+            rerank_results = await rerank_service.rerank(query, documents, top_n=top_k)
+            
+            if rerank_results:
+                # 根據 Rerank 的結果重新組裝 top_results
+                top_results = []
+                for item in rerank_results:
+                    idx = item["index"]
+                    score = item["relevance_score"]
+                    if idx < len(raw_results):
+                        res = raw_results[idx]
+                        res.score = score  # 更新為 Reranker 的分數
+                        top_results.append(res)
+            else:
+                # 如果 Rerank 失敗，回退到原始排名
+                top_results = raw_results[:top_k]
+        else:
+            # 未啟用 Rerank，直接取前 top_k
+            top_results = raw_results[:top_k]
+        
+        # 門檻過濾 (如果是 Rerank 分數，通常門檻會不同，這裡保留通用處理)
         score_threshold = float(getattr(settings, "RAG_SCORE_THRESHOLD", 0.0))
         if score_threshold > 0:
-            sorted_results = [res for res in sorted_results if getattr(res, "score", 0) >= score_threshold]
-        top_results = sorted_results[:top_k]
-        
+            top_results = [res for res in top_results if getattr(res, "score", 0) >= score_threshold]
+            
         if not top_results:
-            return "(No relevant information found)"
+            return "(No relevant information found after filtering)"
             
         context_parts = []
         for i, res in enumerate(top_results):
@@ -308,12 +354,22 @@ class AgentService:
         當 Agent 已取得檢索資料但模型未正確輸出 ANSWER_DIRECTLY 時，強制走一次回答生成。
         """
         configured_system_prompt = self._get_configured_system_prompt()
+        global_style_content = self._get_global_style_content()
+        
         messages = []
+        
+        combined_system_instructions = ""
         if configured_system_prompt:
+            combined_system_instructions += f"User-Defined Style & Personality:\n{configured_system_prompt}\n\n"
+        if global_style_content:
+            combined_system_instructions += f"Global Reply Rules (MUST STRICTLY FOLLOW):\n{global_style_content}\n\n"
+            
+        if combined_system_instructions:
             messages.append({
                 "role": "system",
-                "content": configured_system_prompt
+                "content": combined_system_instructions.strip()
             })
+            
         messages.append({
             "role": "system",
             "content": f"Reference Materials:\n\n{retrieved_context}\n\nIMPORTANT: You must respond in Traditional Chinese (zh-TW)."
@@ -393,6 +449,22 @@ The following list only contains skills that are enabled in skill management. "E
         取得 UI / .env 設定的全域 system prompt，避免 Agent 流程忽略使用者設定。
         """
         return (getattr(settings, "LLM_SYSTEM_PROMPT", "") or "").strip()
+
+    def _get_global_style_content(self) -> str:
+        """
+        獲取全域自動載入的語氣技能內容（如 linebot-reply），
+        若啟用則直接注入 System Prompt，避免增加 LLM 決策負擔。
+        """
+        skill_settings = skill_service.get_settings()
+        enabled_skill_ids = set(skill_settings.get("enabled_skills", []))
+        global_style_skills = ["linebot-reply"]
+        content_parts = []
+        for skill_id in global_style_skills:
+            if skill_id in enabled_skill_ids:
+                content = skill_service.get_skill_content(skill_id)
+                if content:
+                    content_parts.append(f"[Global Style: {skill_id}]\n{content}")
+        return "\n\n".join(content_parts)
 
     def _extract_content(self, result: Dict[str, Any]) -> str:
         choices = result.get("choices") or []

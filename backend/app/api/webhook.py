@@ -80,7 +80,7 @@ async def process_line_events(events: list, webhook_request_id: str):
         else:
             try:
                 user_id = event.get("source", {}).get("userId", "")
-                reply_text = await line_bot_service.generate_reply_text(user_text, user_id=user_id)
+                reply_text = await line_bot_service.generate_reply_text(user_text, user_id=user_id, request_id=request_id)
             except Exception as exc:
                 logger.exception("Failed to generate LINE reply text")
                 await line_request_log_service.update_request(

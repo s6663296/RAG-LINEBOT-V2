@@ -5,10 +5,10 @@ from dotenv import dotenv_values, set_key
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.core.config import DATA_DIR, settings
+from app.core.config import DATA_DIR, ROOT_DIR, settings
 
 router = APIRouter()
-ENV_FILE_PATH = DATA_DIR / ".env"
+ENV_FILE_PATH = ROOT_DIR / ".env"
 
 
 class EnvSettingItem(BaseModel):
@@ -110,6 +110,30 @@ ENV_SETTING_DEFINITIONS: List[Dict[str, str]] = [
         "label": "RAG 分數門檻",
         "input_type": "number",
         "description": "過濾低相關度片段；0 表示不過濾。若誤殺答案可維持 0。",
+    },
+    {
+        "key": "RAG_ENABLE_RERANK",
+        "label": "啟用 Rerank (重排)",
+        "input_type": "boolean",
+        "description": "是否啟用兩階段檢索。開啟後會更準確，但會多一次 API 呼叫。",
+    },
+    {
+        "key": "RERANK_API_URL",
+        "label": "Rerank API URL",
+        "input_type": "text",
+        "description": "Rerank API 的 URL，例如 https://api.siliconflow.cn/v1/rerank。",
+    },
+    {
+        "key": "RERANK_API_KEY",
+        "label": "Rerank API Key",
+        "input_type": "password",
+        "description": "Rerank 服務的 API Key (若與 Embedding 相同可留空)。",
+    },
+    {
+        "key": "RERANK_MODEL_ID",
+        "label": "Rerank Model ID",
+        "input_type": "text",
+        "description": "要使用的 Rerank 模型名稱，例如 BAAI/bge-reranker-v2-m3。",
     },
     {
         "key": "LLM_SYSTEM_PROMPT",
@@ -244,6 +268,8 @@ def _apply_runtime_settings(updated_values: Dict[str, str]) -> None:
     for key, raw_value in updated_values.items():
         if key == "LINE_ENABLE_SIGNATURE_VALIDATION":
             settings.LINE_ENABLE_SIGNATURE_VALIDATION = raw_value == "true"
+        elif key == "RAG_ENABLE_RERANK":
+            settings.RAG_ENABLE_RERANK = raw_value == "true"
         elif key == "LLM_TEMPERATURE":
             settings.LLM_TEMPERATURE = float(raw_value)
         elif key in {
@@ -271,6 +297,10 @@ def _apply_runtime_settings(updated_values: Dict[str, str]) -> None:
     if any(key.startswith("EMBEDDING_") for key in updated_values):
         from app.services.embedding import embedding_service
         embedding_service.refresh_from_settings()
+
+    if any(key == "RAG_ENABLE_RERANK" or key.startswith("RERANK_") for key in updated_values):
+        from app.services.rerank import rerank_service
+        rerank_service.refresh_from_settings()
 
 
 @router.get("/env", response_model=EnvSettingsResponse)

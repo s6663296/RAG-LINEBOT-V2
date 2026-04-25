@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings
 ROOT_DIR = Path(__file__).resolve().parents[3]
 DATA_DIR = Path(os.getenv("DATA_DIR", str(ROOT_DIR / "data")))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
-ENV_FILES = [str(ROOT_DIR / "backend" / ".env"), str(DATA_DIR / ".env")]
+ENV_FILES = [str(ROOT_DIR / ".env")]
 
 
 class Settings(BaseSettings):
@@ -66,6 +66,12 @@ Note: ONLY output pure JSON. DO NOT include any explanatory text.
     EMBEDDING_API_URL: str = ""
     EMBEDDING_API_KEY: str = ""
     EMBEDDING_REQUEST_TIMEOUT_SECONDS: float = 120.0
+
+    # Rerank API 設定
+    RAG_ENABLE_RERANK: bool = True
+    RERANK_API_URL: str = "https://api.siliconflow.cn/v1/rerank"
+    RERANK_API_KEY: str = ""
+    RERANK_MODEL_ID: str = "BAAI/bge-reranker-v2-m3"
 
     class Config:
         case_sensitive = True

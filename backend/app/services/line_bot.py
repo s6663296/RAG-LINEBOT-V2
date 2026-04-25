@@ -67,13 +67,18 @@ class LineBotService:
         except Exception as exc:
             logger.warning(f"Failed to show loading animation: {exc}")
 
-    async def generate_reply_text(self, user_text: str, user_id: str = "") -> str:
+    async def generate_reply_text(self, user_text: str, user_id: str = "", request_id: str = "") -> str:
         """使用 AgentService 執行完整 RAG 流程並產生回覆。"""
         try:
             async def status_callback(msg: str):
-                """當 Agent 改變狀態時，重新觸發 LINE 動畫維持倒數計時。"""
+                """當 Agent 改變狀態時，重新觸發 LINE 動畫維持倒數計時，並記錄當前步驟至 Log。"""
                 if user_id:
                     await self.show_loading_animation(user_id)
+                if request_id:
+                    await line_request_log_service.update_request(
+                        request_id,
+                        add_step=msg
+                    )
 
             # 獲取對話歷史
             history = await line_request_log_service.get_user_history(
@@ -83,6 +88,11 @@ class LineBotService:
             # 開始處理前先觸發一次動畫
             if user_id:
                 await self.show_loading_animation(user_id)
+            if request_id:
+                await line_request_log_service.update_request(
+                    request_id,
+                    add_step="開始生成回覆 (Agent 啟動)"
+                )
 
             content = await agent_service.generate_response(
                 user_text, 

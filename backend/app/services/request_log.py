@@ -116,6 +116,7 @@ class LineRequestLogService:
         success: Optional[bool] = None,
         finished: bool = False,
         metadata: Optional[Dict[str, Any]] = None,
+        add_step: Optional[str] = None,
     ) -> bool:
         async with AsyncSessionLocal() as session:
             stmt = select(LineRequestLog).where(LineRequestLog.request_id == request_id)
@@ -128,7 +129,7 @@ class LineRequestLogService:
             if status is not None:
                 log.status = status
             if stage is not None:
-                log.stage = stage
+                log.stage = stage[:50]
             if error is not None:
                 log.error = error[:1000]
             if reply_text_preview is not None:
@@ -136,9 +137,27 @@ class LineRequestLogService:
                 log.full_reply_text = reply_text_preview
             if success is not None:
                 log.success = bool(success)
+            
+            current_metadata = log.metadata_json or {}
+            metadata_changed = False
+            
             if metadata:
-                current_metadata = log.metadata_json or {}
                 current_metadata.update(metadata)
+                metadata_changed = True
+                
+            if add_step:
+                steps = current_metadata.get("steps", [])
+                steps.append({
+                    "time": datetime.now(timezone.utc).isoformat(),
+                    "step": add_step
+                })
+                current_metadata["steps"] = steps
+                log.stage = add_step[:50]
+                metadata_changed = True
+                
+            if metadata_changed:
+                # SQLAlchemy JSON column needs to be reassigned to detect changes correctly in some cases
+                # or use flag_modified(log, "metadata_json")
                 log.metadata_json = current_metadata
 
             log.updated_at = datetime.now(timezone.utc)

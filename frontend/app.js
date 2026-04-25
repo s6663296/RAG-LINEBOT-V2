@@ -375,7 +375,7 @@ function createSettingField(item) {
 function getSettingCategory(key) {
     if (key.startsWith('LINE_')) return 'line';
     if (key.startsWith('LLM_')) return 'llm';
-    if (key.startsWith('RAG_') || key.startsWith('AGENT_')) return 'rag';
+    if (key.startsWith('RAG_') || key.startsWith('AGENT_') || key.startsWith('RERANK_')) return 'rag';
     if (key.startsWith('QDRANT_') || key.startsWith('EMBEDDING_')) return 'services';
     return 'llm'; // Default
 }
