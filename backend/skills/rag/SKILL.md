@@ -17,7 +17,7 @@ Determine if retrieval is necessary based on the user's query and execute RAG re
 ## When To Use This Skill
 - Use ONLY when queries involve knowledge base, documents, FAQs, product info, company policies, laws, regulations, contracts, or other external data.
 - For legal or regulatory questions, even if specific laws are not mentioned, perform a broad search using user terms and synonyms first. Do not ask for clarification before searching.
-- DO NOT use this skill for greetings, casual chat, robot status checks, or common knowledge questions. Do not call `PREPROCESS_QUERY` for these.
+- DO NOT use this skill for greetings, casual chat, robot status checks, programming questions, system commands, or out-of-domain common knowledge. Do not call `PREPROCESS_QUERY` for these.
 
 ## Preprocess Tool Usage
 1. After loading RAG Skill, if retrieval is deemed necessary, output `PREPROCESS_QUERY`.
