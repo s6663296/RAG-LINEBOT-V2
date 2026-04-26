@@ -77,10 +77,11 @@ async def process_line_events(events: list, webhook_request_id: str):
 
         if not line_bot_service.is_configured():
             reply_text = "LINE Bot 尚未完成設定，請聯絡管理員。"
+            success = False
         else:
             try:
                 user_id = event.get("source", {}).get("userId", "")
-                reply_text = await line_bot_service.generate_reply_text(user_text, user_id=user_id, request_id=request_id)
+                reply_text, success = await line_bot_service.generate_reply_text(user_text, user_id=user_id, request_id=request_id)
             except Exception as exc:
                 logger.exception("Failed to generate LINE reply text")
                 await line_request_log_service.update_request(
@@ -104,11 +105,12 @@ async def process_line_events(events: list, webhook_request_id: str):
             await line_bot_service.reply_text(reply_token, reply_text)
             await line_request_log_service.update_request(
                 request_id,
-                status="completed",
-                stage="completed",
-                success=True,
+                status="completed" if success else "failed",
+                stage="completed" if success else "agent_error",
+                success=success,
                 finished=True,
                 reply_text_preview=reply_text,
+                error="" if success else reply_text
             )
         except Exception as exc:
             logger.exception("Failed to send LINE reply")

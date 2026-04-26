@@ -28,33 +28,77 @@ class SkillService:
 
     def _normalize_settings(self):
         """
-        將舊版技能設定轉換為新版啟用/停用設定。
-        缺少 enabled_skills 時預設啟用所有技能，維持既有「由 LLM 自行選擇技能」行為。
+        將技能設定正規化為：
+        - enabled_skills: 可供 LLM 路由選擇的技能
+        - forced_skills: 必須先執行（或先載入）的技能
+
+        相容舊版：若缺少 enabled_skills，預設啟用所有技能；forced_skills 預設為空。
         """
         if "enabled_skills" not in self.settings:
             self.settings["enabled_skills"] = list(self.skills.keys())
         elif not isinstance(self.settings.get("enabled_skills"), list):
             self.settings["enabled_skills"] = []
 
+        if "forced_skills" not in self.settings:
+            self.settings["forced_skills"] = []
+        elif not isinstance(self.settings.get("forced_skills"), list):
+            self.settings["forced_skills"] = []
+
         valid_skill_ids = set(self.skills.keys())
-        seen = set()
-        self.settings["enabled_skills"] = [
+
+        enabled_seen = set()
+        normalized_enabled = [
             skill_id
             for skill_id in self.settings.get("enabled_skills", [])
-            if skill_id in valid_skill_ids and not (skill_id in seen or seen.add(skill_id))
+            if skill_id in valid_skill_ids and not (skill_id in enabled_seen or enabled_seen.add(skill_id))
         ]
+
+        forced_seen = set()
+        normalized_forced = [
+            skill_id
+            for skill_id in self.settings.get("forced_skills", [])
+            if skill_id in valid_skill_ids and not (skill_id in forced_seen or forced_seen.add(skill_id))
+        ]
+
+        # 強制技能必須同時是啟用技能，避免無效配置。
+        enabled_set = set(normalized_enabled)
+        normalized_forced = [skill_id for skill_id in normalized_forced if skill_id in enabled_set]
+
+        self.settings["enabled_skills"] = normalized_enabled
+        self.settings["forced_skills"] = normalized_forced
         self.settings.pop("mandatory_skills", None)
 
-    def save_settings(self, enabled_skills: List[str]):
+    def save_settings(self, enabled_skills: List[str], forced_skills: Optional[List[str]] = None):
         self.load_skills()
+
         valid_skill_ids = set(self.skills.keys())
-        seen = set()
-        self.settings["enabled_skills"] = [
+
+        enabled_seen = set()
+        normalized_enabled = [
             skill_id
             for skill_id in enabled_skills
-            if skill_id in valid_skill_ids and not (skill_id in seen or seen.add(skill_id))
+            if skill_id in valid_skill_ids and not (skill_id in enabled_seen or enabled_seen.add(skill_id))
         ]
+
+        # 若舊版 API 未帶 forced_skills，保留現有 forced 設定（並在後續做合法化）。
+        raw_forced_skills = self.settings.get("forced_skills", []) if forced_skills is None else forced_skills
+        if not isinstance(raw_forced_skills, list):
+            raw_forced_skills = []
+
+        forced_seen = set()
+        normalized_forced = [
+            skill_id
+            for skill_id in raw_forced_skills
+            if skill_id in valid_skill_ids and not (skill_id in forced_seen or forced_seen.add(skill_id))
+        ]
+
+        enabled_set = set(normalized_enabled)
+        normalized_forced = [skill_id for skill_id in normalized_forced if skill_id in enabled_set]
+
+        self.settings["enabled_skills"] = normalized_enabled
+        self.settings["forced_skills"] = normalized_forced
         self.settings.pop("mandatory_skills", None)
+
         try:
             with open(self.settings_path, "w", encoding="utf-8") as f:
                 json.dump(self.settings, f, ensure_ascii=False, indent=2)
@@ -66,7 +110,8 @@ class SkillService:
         self._normalize_settings()
         return {
             **self.settings,
-            "enabled_skills": list(self.settings.get("enabled_skills", []))
+            "enabled_skills": list(self.settings.get("enabled_skills", [])),
+            "forced_skills": list(self.settings.get("forced_skills", []))
         }
 
     def load_skills(self):
@@ -91,6 +136,7 @@ class SkillService:
                 "skill_id": skill_id,
                 "name": metadata.get("name", skill_id),
                 "description": metadata.get("description", ""),
+                "metadata": metadata,
                 "path": skill_md_path,
                 "dir": skill_path
             }
@@ -123,7 +169,8 @@ class SkillService:
             {
                 "skill_id": s["skill_id"],
                 "name": s["name"],
-                "description": s["description"]
+                "description": s["description"],
+                **s.get("metadata", {})
             }
             for s in self.skills.values()
         ]

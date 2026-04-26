@@ -2,5 +2,8 @@
   "enabled_skills": [
     "linebot-reply",
     "rag"
+  ],
+  "forced_skills": [
+    "rag"
   ]
 }

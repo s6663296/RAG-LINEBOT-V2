@@ -67,7 +67,7 @@ class LineBotService:
         except Exception as exc:
             logger.warning(f"Failed to show loading animation: {exc}")
 
-    async def generate_reply_text(self, user_text: str, user_id: str = "", request_id: str = "") -> str:
+    async def generate_reply_text(self, user_text: str, user_id: str = "", request_id: str = "") -> tuple[str, bool]:
         """使用 AgentService 執行完整 RAG 流程並產生回覆。"""
         try:
             async def status_callback(msg: str):
@@ -99,10 +99,14 @@ class LineBotService:
                 history=history,
                 status_callback=status_callback
             )
-            return content[:5000]
+            return content[:5000], True
         except Exception as exc:
             logger.exception("Failed to generate LINE reply via AgentService")
-            return "目前系統忙碌中，請稍後再試一次。"
+            # 優先使用 Exception 中的友善訊息，若無則回傳通用錯誤
+            error_msg = str(exc)
+            if not error_msg or "Exception" in error_msg:
+                error_msg = "目前系統忙碌中，請稍後再試一次。"
+            return error_msg[:5000], False
 
     async def reply_text(self, reply_token: str, text: str) -> None:
         """呼叫 LINE Reply API 回覆文字訊息。"""

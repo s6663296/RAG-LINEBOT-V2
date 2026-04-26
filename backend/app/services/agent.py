@@ -28,25 +28,60 @@ class AgentService:
         # 準備初始 Messages
         current_history = history or []
         
-        # 取得 Skill 列表與啟用設定。未開啟的 skill 不交給 LLM 路由。
+        # 取得 Skill 列表與設定。
         all_skills = skill_service.get_skill_list()
         skill_settings = skill_service.get_settings()
         enabled_skill_ids = set(skill_settings.get("enabled_skills", []))
-        global_style_skills = ["linebot-reply"]
-        available_skills = [skill for skill in all_skills if skill["skill_id"] in enabled_skill_ids and skill["skill_id"] not in global_style_skills]
+        forced_skill_ids = [
+            skill_id
+            for skill_id in skill_settings.get("forced_skills", [])
+            if skill_id in enabled_skill_ids
+        ]
+
+        available_skills = [
+            skill
+            for skill in all_skills
+            if skill["skill_id"] in enabled_skill_ids
+        ]
         available_skill_ids = {skill["skill_id"] for skill in available_skills}
-        
-        # 取得全域風格內容
-        global_style_content = self._get_global_style_content()
-        
+
+        global_style_content = ""
+        active_style_skill_ids = []
+
         # 初始系統提示詞 (Router 模式)
         system_prompt = self._get_router_prompt(available_skills)
-        
-        # 執行迴圈：技能是否載入與執行由 LLM 透過 READ_SKILL 決定，不再預先強制載入。
-        loaded_skills = set()
+
+        # 預先載入強制技能，讓 LLM 後續在既有技能背景下再做路由。
+        loaded_skills = {skill_id for skill_id in forced_skill_ids if skill_id in available_skill_ids}
         retrieved_context = ""
         rag_retrieval_done = False
-        
+        current_step = 1
+
+        if status_callback:
+            # 只回報強制載入的技能
+            for skill_id in sorted(loaded_skills):
+                await self._report_status(status_callback, current_step, "載入技能", f"正在載入強制技能: {skill_id}")
+                current_step += 1
+
+        # 特例：若 rag 被設定為強制技能，先做查詢前處理與檢索，再進入 LLM 決策。
+        if "rag" in loaded_skills:
+            logger.info("Forced skill 'rag' enabled. Running retrieval before router loop.")
+            processed_query = await self._preprocess_query(user_text, status_callback, step=current_step)
+            current_step += 1
+            
+            forced_query = processed_query.rewritten_query or user_text
+            rag_context, next_step = await self._execute_rag(forced_query, settings.RAG_TOP_K, status_callback, step=current_step)
+            current_step = next_step
+            
+            rag_retrieval_done = True
+            retrieved_context = (
+                "[Forced Skill Execution]\n"
+                "skill: rag\n"
+                "note: RAG retrieval was executed before LLM routing.\n"
+                f"{self._format_processed_query_context(processed_query)}\n\n"
+                f"{rag_context}"
+            )
+
         max_iterations = max(3, int(getattr(settings, "AGENT_MAX_ITERATIONS", self.MAX_ITERATIONS)))
         last_action_signature = ""
         repeated_action_count = 0
@@ -71,15 +106,26 @@ class AgentService:
                     "role": "system",
                     "content": (
                         f"{combined_system_instructions}"
-                        "--- IMPORTANT INSTRUCTIONS FOR AGENT PHASE ---\n"
+                        "<instruction_agent_phase>\n"
                         "1. You are currently in the DECISION-MAKING phase. Your goal is to determine IF you need to use tools (like RAG).\n"
-                        "2. If the user question requires information from the knowledge base, you MUST call READ_SKILL and then CALL_RAG.\n"
+                        "2. If a knowledge-base question appears and 'rag' is not loaded yet, call READ_SKILL('rag') first; if 'rag' is already loaded, directly use PREPROCESS_QUERY/CALL_RAG as needed.\n"
                         "3. DO NOT output the fallback message ('Sorry, I cannot answer...') as natural language now. "
                         "You can only use it later in the 'answer' field of ANSWER_DIRECTLY IF AND ONLY IF you have already performed retrieval and found no info.\n"
-                        "4. ALWAYS output a single JSON object. DO NOT output plain text."
+                        "4. ALWAYS output a single JSON object. DO NOT output plain text.\n"
+                        "</instruction_agent_phase>"
                     )
                 })
             
+            if loaded_skills:
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "Forced/Loaded skills already active before this decision step: "
+                        f"{', '.join(sorted(loaded_skills))}. "
+                        "Treat them as active context. Do NOT repeatedly call READ_SKILL for the same skill."
+                    )
+                })
+
             # 如果有載入的 skill，加入 system prompt 中間
             for skill_id in loaded_skills:
                 skill_content = skill_service.get_skill_content(skill_id)
@@ -112,8 +158,9 @@ class AgentService:
                 )
 
                 if "error" in result:
-                    logger.error(f"Agent LLM error: {result}")
-                    return "系統忙碌中，請稍後再試。(LLM Error)"
+                    error_detail = result.get("error")
+                    logger.error(f"Agent LLM error: {error_detail}")
+                    raise Exception(f"系統忙碌中，請稍後再試。(LLM Error: {error_detail})")
 
                 raw_content = self._extract_content(result)
                 action_data = self._parse_json_response(raw_content)
@@ -134,27 +181,30 @@ class AgentService:
                 if repeated_action_count >= 2:
                     logger.warning(f"Repeated action detected: {action_signature}")
                     if rag_retrieval_done and retrieved_context:
-                        return await self._generate_final_answer(user_text, current_history, retrieved_context)
-                    return "I am unable to complete the retrieval process at the moment. Please try a more specific question."
+                        return await self._generate_final_answer(user_text, current_history, retrieved_context, status_callback)
+                    raise Exception("I am unable to complete the retrieval process at the moment. Please try a more specific question. (Repeated Action Loop)")
                 
                 logger.info(f"Step {i+1} Action: {action} (Reason: {reason})")
                 if status_callback:
-                    await status_callback(f"步驟 {i+1}: {action} - {reason}")
+                    await self._report_status(status_callback, current_step, "決策分析", f"{action} - {reason}")
+                    current_step += 1
 
                 if action == "ANSWER_DIRECTLY":
                     answer = action_data.get("answer", "I cannot answer this question directly.")
+
                     if "rag" in loaded_skills and not rag_retrieval_done:
                         if processed_query is None:
                             logger.warning("RAG skill attempted ANSWER_DIRECTLY before preprocessing; forcing PREPROCESS_QUERY.")
-                            processed_query = await self._preprocess_query(user_text, status_callback)
+                            processed_query = await self._preprocess_query(user_text, status_callback, step=current_step)
+                            current_step += 1
                             retrieved_context += self._format_processed_query_context(processed_query)
                             continue
                         if processed_query.need_retrieval:
                             logger.warning("RAG skill attempted ANSWER_DIRECTLY before retrieval; forcing CALL_RAG.")
                             query = processed_query.rewritten_query or user_text
-                            if status_callback:
-                                await status_callback(f"正在檢索資料: {query}...")
-                            retrieved_context = await self._execute_rag(query, settings.RAG_TOP_K)
+                            rag_context, next_step = await self._execute_rag(query, settings.RAG_TOP_K, status_callback, step=current_step)
+                            current_step = next_step
+                            retrieved_context = rag_context
                             rag_retrieval_done = True
                             continue
                     return self._sanitize_final_answer(answer)
@@ -165,7 +215,8 @@ class AgentService:
                         if skill_id not in loaded_skills:
                             loaded_skills.add(skill_id)
                             if status_callback:
-                                await status_callback(f"正在載入技能: {skill_id}...")
+                                await self._report_status(status_callback, current_step, "載入技能", f"正在載入技能: {skill_id}")
+                                current_step += 1
                             # 進入下一輪，讓 LLM 根據新載入的內容做決定
                             continue
                         else:
@@ -182,12 +233,14 @@ class AgentService:
                         if "rag" in available_skill_ids:
                             loaded_skills.add("rag")
                             if status_callback:
-                                await status_callback("正在載入技能: rag...")
+                                await self._report_status(status_callback, current_step, "載入技能", "正在載入技能: rag")
+                                current_step += 1
                             continue
-                        return "RAG skill is currently not enabled, cannot perform query preprocessing."
+                        raise Exception("RAG skill is currently not enabled, cannot perform query preprocessing.")
 
                     query = action_data.get("query") or user_text
-                    processed_query = await self._preprocess_query(query, status_callback)
+                    processed_query = await self._preprocess_query(query, status_callback, step=current_step)
+                    current_step += 1
                     retrieved_context += self._format_processed_query_context(processed_query)
                     continue
 
@@ -197,14 +250,16 @@ class AgentService:
                         if "rag" in available_skill_ids:
                             loaded_skills.add("rag")
                             if status_callback:
-                                await status_callback("正在載入技能: rag...")
+                                await self._report_status(status_callback, current_step, "載入技能", "正在載入技能: rag")
+                                current_step += 1
                             continue
-                        return "RAG skill is currently not enabled, cannot perform retrieval."
+                        raise Exception("RAG skill is currently not enabled, cannot perform retrieval.")
 
                     query = action_data.get("query") or (processed_query.rewritten_query if processed_query else user_text)
                     if processed_query is None:
                         logger.warning("CALL_RAG requested before preprocessing; forcing PREPROCESS_QUERY first.")
-                        processed_query = await self._preprocess_query(query, status_callback)
+                        processed_query = await self._preprocess_query(query, status_callback, step=current_step)
+                        current_step += 1
                         retrieved_context += self._format_processed_query_context(processed_query)
                         if not processed_query.need_retrieval:
                             retrieved_context += "\n\n[Retrieval Skipped]\nPreprocessing indicates this question does not need knowledge base retrieval. Please respond directly to the user."
@@ -217,10 +272,9 @@ class AgentService:
                         continue
 
                     top_k = int(action_data.get("top_k") or settings.RAG_TOP_K)
-                    if status_callback:
-                        await status_callback(f"正在檢索資料: {query}...")
-                    
-                    retrieved_context = await self._execute_rag(query, top_k, status_callback)
+                    rag_context, next_step = await self._execute_rag(query, top_k, status_callback, step=current_step)
+                    current_step = next_step
+                    retrieved_context = rag_context
                     rag_retrieval_done = True
                     continue
 
@@ -231,7 +285,8 @@ class AgentService:
                         file_content = skill_service.get_skill_file_content(skill_id, file_path)
                         if file_content:
                             if status_callback:
-                                await status_callback(f"正在讀取參考文件: {file_path}...")
+                                await self._report_status(status_callback, current_step, "讀取文件", f"正在讀取參考文件: {file_path}")
+                                current_step += 1
                             # Add file content as system supplement
                             messages.append({"role": "system", "content": f"File {file_path} content:\n\n{file_content}"})
                             # 更新 system_prompt 或在此處直接 continue 讓 messages 重新組裝
@@ -250,30 +305,29 @@ class AgentService:
                     logger.warning(f"Unknown action: {action}")
                     if "answer" in action_data:
                         return action_data["answer"]
-                    return "I am not sure what the next step is. Please try again later."
+                    raise Exception("I am not sure what the next step is. Please try again later. (Unknown Action)")
 
             except Exception as e:
                 logger.exception(f"Error in agent iteration: {e}")
-                return f"An error occurred during processing: {str(e)}"
+                raise e
 
         if rag_retrieval_done and retrieved_context:
-            return await self._generate_final_answer(user_text, current_history, retrieved_context)
+            return await self._generate_final_answer(user_text, current_history, retrieved_context, status_callback, step=current_step)
 
         if "rag" in loaded_skills and processed_query and processed_query.need_retrieval:
             query = processed_query.rewritten_query or user_text
-            if status_callback:
-                await status_callback(f"正在檢索資料: {query}...")
-            retrieved_context = await self._execute_rag(query, settings.RAG_TOP_K)
-            return await self._generate_final_answer(user_text, current_history, retrieved_context)
+            rag_context, next_step = await self._execute_rag(query, settings.RAG_TOP_K, status_callback, step=current_step)
+            current_step = next_step
+            return await self._generate_final_answer(user_text, current_history, rag_context, status_callback, step=current_step)
 
-        return "I apologize, but I've taken too many steps to process your request. Please try a more specific question."
+        raise Exception("I apologize, but I've taken too many steps to process your request. Please try a more specific question. (Max Iterations)")
 
-    async def _preprocess_query(self, query: str, status_callback: Optional[Any] = None) -> ProcessedQuery:
+    async def _preprocess_query(self, query: str, status_callback: Optional[Any] = None, step: int = 1) -> ProcessedQuery:
         """
         執行 RAG 查詢前處理並統一送出狀態訊息。
         """
         if status_callback:
-            await status_callback("正在前處理查詢...")
+            await self._report_status(status_callback, step, "先前處理", "正在分析問題意圖與優化查詢語句")
         return await query_processor.process_query(query)
 
     def _format_processed_query_context(self, processed_query: ProcessedQuery) -> str:
@@ -287,74 +341,85 @@ class AgentService:
             f"rewritten_query: {processed_query.rewritten_query}"
         )
 
-    async def _execute_rag(self, query: str, top_k: int = 5, status_callback: Optional[Any] = None) -> str:
+    async def _execute_rag(self, query: str, top_k: int = 5, status_callback: Optional[Any] = None, step: int = 1) -> (str, int):
         """
-        執行 RAG 檢索邏輯：
-        1. 混合檢索 (Hybrid Search) + RRF 融合。
-        2. Rerank (重排) 以提升 Top-K 準確度。
+        執行 RAG 檢索邏輯。回傳 (context_str, next_step_num)
         """
         from app.services.rerank import rerank_service
+        from app.services.rag_manager import rag_manager
+        current_step = step
 
-        dense, sparse = await embedding_service.get_embeddings(query)
-        
+        if status_callback:
+            await self._report_status(status_callback, current_step, "知識檢索", f"正在進行混合檢索 (Dense + BM25) 搜尋相關資料")
+            current_step += 1
+
         # 第一階段：取回較多候選者 (Candidates)
-        # 如果啟用了 Rerank，我們取回 top_k * 4 個候選者來重排
         candidate_multiplier = int(getattr(settings, "RAG_CANDIDATE_MULTIPLIER", 4))
         candidate_limit = top_k * candidate_multiplier
         
-        raw_results = vector_db_service.search_hybrid(dense, sparse, limit=candidate_limit)
+        # 使用 rag_manager.search 進行混合檢索 (已包含 RRF 融合)
+        hybrid_results = await rag_manager.search(query, limit=candidate_limit)
         
-        if not raw_results:
-            return "(No relevant information found)"
+        if not hybrid_results:
+            return "(No relevant information found)", current_step
 
         # 第二階段：Rerank
-        if settings.RAG_ENABLE_RERANK and len(raw_results) > 1:
+        if settings.RAG_ENABLE_RERANK and len(hybrid_results) > 1:
             if status_callback:
-                await status_callback(f"正在進行 Rerank 重排 (BGE-M3)...")
-            documents = [res.payload.get("text", "") for res in raw_results]
+                await self._report_status(status_callback, current_step, "精確排序", "正在使用 Reranker 對混合檢索結果進行重排")
+                current_step += 1
+            
+            documents = [res.get("payload", {}).get("text", "") for res in hybrid_results]
             rerank_results = await rerank_service.rerank(query, documents, top_n=top_k)
             
             if rerank_results:
-                # 根據 Rerank 的結果重新組裝 top_results
                 top_results = []
                 for item in rerank_results:
                     idx = item["index"]
                     score = item["relevance_score"]
-                    if idx < len(raw_results):
-                        res = raw_results[idx]
-                        res.score = score  # 更新為 Reranker 的分數
+                    if idx < len(hybrid_results):
+                        res = hybrid_results[idx]
+                        res["score"] = score  # 更新為 Reranker 的分數
                         top_results.append(res)
             else:
-                # 如果 Rerank 失敗，回退到原始排名
-                top_results = raw_results[:top_k]
+                top_results = hybrid_results[:top_k]
         else:
-            # 未啟用 Rerank，直接取前 top_k
-            top_results = raw_results[:top_k]
+            top_results = hybrid_results[:top_k]
         
-        # 門檻過濾 (如果是 Rerank 分數，通常門檻會不同，這裡保留通用處理)
+        # 門檻過濾
         score_threshold = float(getattr(settings, "RAG_SCORE_THRESHOLD", 0.0))
         if score_threshold > 0:
-            top_results = [res for res in top_results if getattr(res, "score", 0) >= score_threshold]
+            top_results = [res for res in top_results if res.get("score", 0) >= score_threshold]
             
         if not top_results:
-            return "(No relevant information found after filtering)"
+            return "(No relevant information found after filtering)", current_step
             
         context_parts = []
         for i, res in enumerate(top_results):
-            payload = res.payload or {}
+            payload = res.get("payload", {})
             text = payload.get("text", "")
             title = payload.get("title", "No Title")
-            score = getattr(res, 'score', 0)
+            score = res.get("score", 0)
             context_parts.append(f"[Reference {i+1}] (Score: {score:.4f}) Title: {title}\nContent: {text}")
         
-        return "\n\n".join(context_parts)
+        return "\n\n".join(context_parts), current_step
 
-    async def _generate_final_answer(self, user_text: str, history: List[Dict[str, str]], retrieved_context: str) -> str:
+    async def _generate_final_answer(self, user_text: str, history: List[Dict[str, str]], retrieved_context: str, status_callback: Optional[Any] = None, step: int = 1) -> str:
         """
         當 Agent 已取得檢索資料但模型未正確輸出 ANSWER_DIRECTLY 時，強制走一次回答生成。
         """
+        if status_callback:
+            await self._report_status(status_callback, step, "整合回答", "正在整合所有資料並產生最終回覆")
+            current_step += 1
+
         configured_system_prompt = self._get_configured_system_prompt()
-        global_style_content = self._get_global_style_content()
+        
+        # 整合所有已載入技能的內容作為參考
+        retrieved_skill_context = ""
+        for skill_id in sorted(loaded_skills):
+            content = skill_service.get_skill_content(skill_id)
+            if content:
+                retrieved_skill_context += f"\n\n[Loaded Skill: {skill_id}]\n{content}"
         
         messages = []
         
@@ -372,7 +437,15 @@ class AgentService:
             
         messages.append({
             "role": "system",
-            "content": f"Reference Materials:\n\n{retrieved_context}\n\nIMPORTANT: You must respond in Traditional Chinese (zh-TW)."
+            "content": (
+                f"<knowledge_supplement>\n{retrieved_context}\n{retrieved_skill_context}\n</knowledge_supplement>\n\n"
+                "<interaction_style>\n"
+                "- Respond in Traditional Chinese (zh-TW).\n"
+                "- NATURAL PERSONA: You MUST act as a helpful human assistant. NEVER mention 'database', 'reference materials', 'retrieval', 'data', or 'known info' to the user.\n"
+                "- Do NOT use phrases like 'According to the data' or 'The information shows'.\n"
+                "- Integrate the knowledge naturally into your own response as if you've always known it.\n"
+                "</interaction_style>"
+            )
         })
         messages.extend(history)
         messages.append({"role": "user", "content": user_text})
@@ -386,8 +459,9 @@ class AgentService:
             timeout_seconds=settings.LLM_REQUEST_TIMEOUT_SECONDS
         )
         if "error" in result:
-            logger.error(f"Final answer LLM error: {result}")
-            return "系統忙碌中，請稍後再試。(Final Answer Error)"
+            error_detail = result.get("error")
+            logger.error(f"Final answer LLM error: {error_detail}")
+            raise Exception(f"系統忙碌中，請稍後再試。(Final Answer Error: {error_detail})")
         return self._sanitize_final_answer(self._extract_content(result))
 
     def _get_router_prompt(self, skills: List[Dict[str, Any]]) -> str:
@@ -395,54 +469,98 @@ class AgentService:
         Generates the initial decision-making prompt.
         """
         skills_json = json.dumps(skills, ensure_ascii=False, indent=2)
-        return f"""You are the core decision engine for a backend Agent. You cannot directly answer questions that require external knowledge; you must first determine whether you need to read an enabled skill.
+        return f"""You are a specialized AI customer service agent running in a RAG-enabled backend.
 
-Your task is to decide the next action based on the user message. You MUST output in JSON format.
+You help the user by reasoning carefully. You must evaluate the user's intent and read relevant skills to provide the best response.
 
-[Available Skills List]
-The following list only contains skills that are enabled in skill management. "Enabled" only means they are available for selection, not that they must be executed. You decide which SKILL to read and execute based on the user question.
-{skills_json}
+<interaction_style>
+- Respond in Traditional Chinese (zh-TW).
+- NATURAL PERSONA: You MUST act as a helpful human assistant. NEVER mention "database", "reference materials", "retrieval", "data", or "known info" to the user.
+- Do NOT use phrases like "根據檢索結果" (According to retrieval results) or "資料顯示" (Data shows). Integrate knowledge naturally.
+- Be concise but complete.
+- Ask clarifying questions ONLY when essential information is missing. Do NOT proactively suggest extended services or ask "if they need anything else".
+- Explain important decisions briefly in the "reason" field.
+- Do not claim you have completed an action unless you actually did it.
+</interaction_style>
 
-[Allowed JSON Action Formats]
+<tool_use>
+You MUST output a single pure JSON object. DO NOT output Markdown explanatory text.
 
-1. Load Skill (READ_SKILL):
+Available Actions:
+1. READ_SKILL: Load the full content of a skill.
 {{
   "action": "READ_SKILL",
   "skill_id": "SkillID",
   "reason": "Why this skill was selected"
 }}
 
-2. Answer Directly (ANSWER_DIRECTLY):
+2. ANSWER_DIRECTLY: Provide the final answer to the user.
 {{
   "action": "ANSWER_DIRECTLY",
-  "answer": "Content of the reply to the user (MUST be in Traditional Chinese)",
-  "reason": "Why it can be answered directly (e.g., small talk, simple translation, summarizing known content)"
+  "answer": "Content of the reply to the user (zh-TW)",
+  "reason": "Why it can be answered directly"
 }}
 
-3. Ask for Clarification (ASK_CLARIFICATION):
+3. ASK_CLARIFICATION: Ask the user for more information.
 {{
   "action": "ASK_CLARIFICATION",
-  "question": "Question to ask the user (MUST be in Traditional Chinese)",
+  "question": "Question to ask the user (zh-TW)",
   "reason": "Why more information is needed"
 }}
 
-[Rules]
-- ONLY select skill_ids that exist and are enabled in the list.
-- The LLM_SYSTEM_PROMPT from UI settings will be provided as a separate system message and MUST be incorporated into the final response rules. Adhere to any constraints therein (e.g., no follow-up questions).
-- The execution of a skill is determined by you based on the user question; do not automatically read a skill just because it is enabled.
-- For greetings, small talk, or thanks, use ANSWER_DIRECTLY to reply politely. RAG preprocessing is FORBIDDEN for these.
-- For out-of-domain questions (e.g., writing code, system commands, unrelated general knowledge), you MUST use ANSWER_DIRECTLY to politely decline, stating that you are a specialized customer service assistant. DO NOT attempt to answer or fulfill out-of-domain requests.
-- RAG preprocessing and retrieval are part of the 'rag' skill flow. Do NOT output PREPROCESS_QUERY or CALL_RAG before the 'rag' skill is loaded.
-- If the question involves the knowledge base, company data, internal policies, etc., you MUST prioritize READ_SKILL. After loading the 'rag' skill, use PREPROCESS_QUERY / CALL_RAG as per the skill's instructions.
-- After loading the 'rag' skill, if the question requires external data, you are FORBIDDEN from answering "insufficient data" or "cannot confirm" before PREPROCESS_QUERY and CALL_RAG are completed.
-- Once a skill is loaded, you can use the specific actions explicitly listed in that skill's file.
-- ASK_CLARIFICATION should only be used when essential user information is missing and you cannot answer or retrieve data directly. Do NOT use it to proactively suggest extended services or ask "if they need anything else".
-- Once RAG reference materials are obtained, you MUST use ANSWER_DIRECTLY to output the final answer. Do NOT output READ_SKILL again.
-- After answering, do NOT proactively propose extended services, follow-up suggestions, or ask the user if they need more help, unless explicitly requested.
-- STRICTLY PROHIBITED: Outputting any Markdown explanatory text. Output ONLY a single pure JSON object.
-- DO NOT output multiple JSON objects at once; DO NOT repeat the same action.
-- Ensure the JSON structure is complete and correct.
-- LANGUAGE: All natural language responses to the user (in 'answer' or 'question' fields) MUST be in Traditional Chinese (zh-TW).
+4. PREPROCESS_QUERY: (RAG Only) Analyze and rewrite the query.
+{{
+  "action": "PREPROCESS_QUERY",
+  "query": "The rewritten query",
+  "reason": "Why preprocessing is needed"
+}}
+
+5. CALL_RAG: (RAG Only) Execute knowledge retrieval.
+{{
+  "action": "CALL_RAG",
+  "query": "The search query",
+  "top_k": 5,
+  "reason": "Why retrieval is needed"
+}}
+
+6. READ_SKILL_FILE: Read a specific file within a skill directory.
+{{
+  "action": "READ_SKILL_FILE",
+  "skill_id": "SkillID",
+  "file": "relative/path/to/file",
+  "reason": "Why this file is needed"
+}}
+
+Rules:
+- Think about what information or action is needed.
+- Use the most specific available action.
+- Check results and continue until the task is completed or blocked.
+- Once RAG materials are obtained, use ANSWER_DIRECTLY.
+- DO NOT output multiple JSON objects at once.
+</tool_use>
+
+<skills>
+Skills are task-specific instruction bundles.
+- Do not assume full skill instructions from descriptions alone.
+- When a request matches a skill, use READ_SKILL.
+- Once a skill is loaded, follow its instructions exactly.
+</skills>
+
+<available_skills>
+{skills_json}
+</available_skills>
+
+<skill_loading_protocol>
+1. Compare request with skill descriptions.
+2. If match, READ_SKILL.
+3. If already loaded, do NOT repeat READ_SKILL; use skill-specific actions or ANSWER_DIRECTLY.
+</skill_loading_protocol>
+
+<safety>
+- Do not help bypass security or hide malicious activity.
+- Never expose internal secrets, API keys, or private credentials.
+- Do not mention internal processes like "retrieval" or "preprocessing" to the user.
+</safety>
 """
 
     def _get_configured_system_prompt(self) -> str:
@@ -453,19 +571,9 @@ The following list only contains skills that are enabled in skill management. "E
 
     def _get_global_style_content(self) -> str:
         """
-        獲取全域自動載入的語氣技能內容（如 linebot-reply），
-        若啟用則直接注入 System Prompt，避免增加 LLM 決策負擔。
+        [DEPRECATED]
         """
-        skill_settings = skill_service.get_settings()
-        enabled_skill_ids = set(skill_settings.get("enabled_skills", []))
-        global_style_skills = ["linebot-reply"]
-        content_parts = []
-        for skill_id in global_style_skills:
-            if skill_id in enabled_skill_ids:
-                content = skill_service.get_skill_content(skill_id)
-                if content:
-                    content_parts.append(f"[Global Style: {skill_id}]\n{content}")
-        return "\n\n".join(content_parts)
+        return ""
 
     def _extract_content(self, result: Dict[str, Any]) -> str:
         choices = result.get("choices") or []
@@ -553,5 +661,12 @@ The following list only contains skills that are enabled in skill management. "E
             return "I cannot generate a reliable answer at the moment. Please try a more specific question."
         answer = self._remove_proactive_followups(answer)
         return answer or "Currently insufficient information to confirm."
+
+    async def _report_status(self, status_callback: Optional[Any], step: int, action: str, detail: str):
+        """
+        統一流程顯示格式：【步驟 X】動作名稱 - 詳細描述
+        """
+        if status_callback:
+            await status_callback(f"【步驟 {step}】{action} - {detail}")
 
 agent_service = AgentService()

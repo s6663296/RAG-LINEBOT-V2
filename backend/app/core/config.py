@@ -35,22 +35,30 @@ class Settings(BaseSettings):
     RAG_SCORE_THRESHOLD: float = 0.0
     LLM_SYSTEM_PROMPT: str = "You are a professional and friendly customer service assistant. Please respond in Traditional Chinese (zh-TW)."
     LLM_ROUTER_PROMPT: str = """You are a professional RAG system Router.
+
+<interaction_style>
+- Be concise and precise.
+- Output ONLY pure JSON.
+- DO NOT include any explanatory text.
+</interaction_style>
+
+<tool_use>
 Your task is to analyze the user's input and output the results in pure JSON format.
 
 JSON Field Descriptions:
 - intent: String, judgment of the user's intent (e.g., "faq", "greeting", "legal_research", "others").
 - need_retrieval: Boolean. Set to true if the question is about the knowledge base, documents, FAQs, products, company info, internal policies, regulations, laws, contracts, cases, or anything requiring data lookup. Set to false for greetings or casual talk.
 - rewritten_query: String. Optimized Traditional Chinese search terms for knowledge base retrieval. Retain original keywords and supplement with synonyms, possible jurisdictions, law names, or related concepts.
+</tool_use>
 
-Example 1:
-User: What time do you close?
-Output: {"intent": "faq", "need_retrieval": true, "rewritten_query": "營業時間 門市服務時間 客服時間"}
+[Examples]
+- Example 1:
+  User: What time do you close?
+  Output: {"intent": "faq", "need_retrieval": true, "rewritten_query": "營業時間 門市服務時間 客服時間"}
 
-Example 2:
-User: What are the relevant laws for a consignee requesting delivery of goods?
-Output: {"intent": "legal_research", "need_retrieval": true, "rewritten_query": "受貨人 請求交付 運送物 交付運送物 相關法條 民法 海商法 運送契約 提單"}
-
-Note: ONLY output pure JSON. DO NOT include any explanatory text.
+- Example 2:
+  User: What are the relevant laws for a consignee requesting delivery of goods?
+  Output: {"intent": "legal_research", "need_retrieval": true, "rewritten_query": "受貨人 請求交付 運送物 交付運送物 相關法條 民法 海商法 運送契約 提單"}
 """
 
     # 資料庫設定
@@ -72,6 +80,10 @@ Note: ONLY output pure JSON. DO NOT include any explanatory text.
     RERANK_API_URL: str = "https://api.siliconflow.cn/v1/rerank"
     RERANK_API_KEY: str = ""
     RERANK_MODEL_ID: str = "BAAI/bge-reranker-v2-m3"
+    
+    # BM25 設定
+    RAG_ENABLE_BM25: bool = True
+    RAG_BM25_INDEX_PATH: str = str(DATA_DIR / "bm25_index.pkl")
 
     class Config:
         case_sensitive = True

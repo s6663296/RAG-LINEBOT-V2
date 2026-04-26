@@ -3,6 +3,8 @@ import datetime
 from typing import List, Dict, Any
 from app.services.embedding import embedding_service
 from app.services.vector_db import vector_db_service
+from app.services.bm25_service import bm25_service
+from app.core.config import settings
 
 class RAGManager:
     """
@@ -97,21 +99,73 @@ class RAGManager:
         if points:
             vector_db_service.upsert_points(points)
             
+        # 同步存入 BM25 索引
+        if settings.RAG_ENABLE_BM25 and points:
+            bm25_docs = [
+                {
+                    "id": p["id"],
+                    "text": p["payload"]["text"],
+                    "payload": p["payload"]
+                }
+                for p in points
+            ]
+            bm25_service.add_documents(bm25_docs)
+            
         return {"doc_id": doc_id, "chunks_count": len(chunks)}
 
     async def search(self, query: str, limit: int = 5):
         """
         搜尋最相關的 chunks。
+        支援 Dense + BM25 混合檢索與 RRF 融合。
         """
-        dense, sparse = await embedding_service.get_embeddings(query)
-        results = vector_db_service.search_hybrid(dense, sparse, limit=limit)
+        dense_vec, sparse_vec = await embedding_service.get_embeddings(query)
+        
+        # 1. 取得向量檢索結果 (通常 API 只回 Dense)
+        dense_results = vector_db_service.search_hybrid(dense_vec, sparse_vec, limit=limit * 2)
+        
+        # 2. 取得 BM25 關鍵字檢索結果
+        bm25_results = []
+        if settings.RAG_ENABLE_BM25:
+            bm25_results = bm25_service.search(query, limit=limit * 2)
+            
+        # 3. RRF (Reciprocal Rank Fusion) 融合
+        # 這裡實作簡單的 RRF
+        fused_scores = {}
+        k = 60  # RRF 常數
+        
+        # 處理 Dense 結果
+        for rank, res in enumerate(dense_results, start=1):
+            doc_id = str(res.id)
+            if doc_id not in fused_scores:
+                fused_scores[doc_id] = {"point": res, "score": 0.0}
+            fused_scores[doc_id]["score"] += 1.0 / (k + rank)
+            
+        # 處理 BM25 結果
+        for rank, res in enumerate(bm25_results, start=1):
+            doc_id = str(res["id"])
+            if doc_id not in fused_scores:
+                # 如果不在向量結果中，需要建立一個類型的點
+                from qdrant_client.models import ScoredPoint
+                point = ScoredPoint(
+                    id=res["id"],
+                    version=0,
+                    score=0.0,
+                    payload=res["payload"],
+                    vector=None
+                )
+                fused_scores[doc_id] = {"point": point, "score": 0.0}
+            fused_scores[doc_id]["score"] += 1.0 / (k + rank)
+            
+        # 排序並取 Top-K
+        sorted_results = sorted(fused_scores.values(), key=lambda x: x["score"], reverse=True)
+        top_results = sorted_results[:limit]
         
         return [
             {
-                "score": r.score,
-                "payload": r.payload
+                "score": r["score"],
+                "payload": r["point"].payload
             }
-            for r in results
+            for r in top_results
         ]
 
 rag_manager = RAGManager()

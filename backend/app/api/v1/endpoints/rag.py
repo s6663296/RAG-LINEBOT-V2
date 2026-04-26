@@ -52,11 +52,13 @@ async def init_qdrant():
 @router.post("/clear")
 async def clear_qdrant():
     """
-    清空 Qdrant Collection (刪除並重建)。
+    清空檢索資料庫 (Qdrant + BM25)。
     """
     try:
-        msg = vector_db_service.clear_collection()
-        return {"status": "success", "message": msg}
+        from app.services.bm25_service import bm25_service
+        msg_qdrant = vector_db_service.clear_collection()
+        bm25_service.clear_index()
+        return {"status": "success", "message": f"{msg_qdrant} and BM25 index has been cleared."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

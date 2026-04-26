@@ -237,11 +237,10 @@ async function sendMessage() {
     // 建立機器人回覆的容器與狀態顯示區
     const botMsgDiv = document.createElement('div');
     botMsgDiv.className = 'message bot';
-    
+
     const statusDiv = document.createElement('div');
-    statusDiv.className = 'message-status';
-    statusDiv.textContent = '準備中...';
-    
+    statusDiv.className = 'message-status active'; // 預設開啟顯示
+
     const contentDiv = document.createElement('div');
     contentDiv.className = 'message-content loading';
     contentDiv.textContent = '...';
@@ -250,6 +249,17 @@ async function sendMessage() {
     botMsgDiv.appendChild(statusDiv);
     chatMessages.appendChild(botMsgDiv);
     chatMessages.scrollTop = chatMessages.scrollHeight;
+
+    // 加入初始狀態
+    const addStatusItem = (text) => {
+        const item = document.createElement('div');
+        item.className = 'status-item';
+        item.innerHTML = `<span>⚙️</span> <span>${text}</span>`;
+        statusDiv.appendChild(item);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+    };
+
+    addStatusItem('分析問題中...');
 
     try {
         const response = await fetch('/api/v1/chat/completions/stream', {
@@ -276,15 +286,18 @@ async function sendMessage() {
                 if (line.startsWith('data: ')) {
                     const data = JSON.parse(line.slice(6));
                     if (data.type === 'status') {
-                        statusDiv.textContent = `⚙️ ${data.content}`;
-                        statusDiv.classList.add('active');
+                        addStatusItem(data.content);
                     } else if (data.type === 'answer') {
                         contentDiv.textContent = data.content;
                         contentDiv.classList.remove('loading');
-                        // statusDiv.textContent = '✅ 處理完成';
-                        // 處理完成後 2 秒隱藏狀態
-                        setTimeout(() => statusDiv.classList.remove('active'), 2000);
                         
+                        // 不再自動隱藏 statusDiv，保留流程紀錄方便 debug
+                        const completeItem = document.createElement('div');
+                        completeItem.className = 'status-item';
+                        completeItem.style.color = 'var(--accent-color)';
+                        completeItem.innerHTML = `<span>✅</span> <span>回答生成完畢</span>`;
+                        statusDiv.appendChild(completeItem);
+
                         // 同步到本地訊息紀錄
                         messages.push({ role: 'assistant', content: data.content });
                     } else if (data.type === 'error') {
@@ -407,15 +420,15 @@ function filterSettingsFields() {
 async function loadSettings() {
     if (!settingsForm) return;
     setSettingsBusy(true);
-    
+
     try {
         const response = await fetch(SETTINGS_API_URL);
         const data = await response.json();
         if (!response.ok) throw new Error(extractErrorMessage(data, '載入設定失敗'));
-        
+
         allSettingsItems = data.items || [];
         settingsFields.innerHTML = '';
-        
+
         if (allSettingsItems.length > 0) {
             allSettingsItems.forEach(item => {
                 settingsFields.appendChild(createSettingField(item));
@@ -451,7 +464,7 @@ async function saveSettings(event) {
         });
         const data = await response.json();
         if (!response.ok) throw new Error(extractErrorMessage(data, '儲存設定失敗'));
-        
+
         showToast('設定已成功儲存', 'success');
     } catch (error) {
         showToast(`儲存失敗：${error.message}`, 'error');
@@ -482,7 +495,7 @@ function renderLogSummary(summary = {}) {
         { key: 'ignored', label: '忽略', value: summary.ignored || 0 },
         { key: 'total', label: '累計', value: summary.total || 0 },
     ];
-    
+
     logSummary.innerHTML = items.map(item => `
         <div class="summary-card ${item.key}">
             <span class="summary-label">${item.label}</span>
@@ -551,12 +564,12 @@ function updateSelectionUI() {
     const totalVisible = currentLogItems.length;
     const totalSelected = selectedLogIds.size;
     console.log(`Updating selection UI: visible=${totalVisible}, selected=${totalSelected}`);
-    
+
     if (logSelectAll) {
         logSelectAll.checked = totalVisible > 0 && totalSelected === totalVisible;
         logSelectAll.indeterminate = totalSelected > 0 && totalSelected < totalVisible;
     }
-    
+
     if (deleteSelectedLogsBtn) {
         deleteSelectedLogsBtn.disabled = totalSelected === 0;
         deleteSelectedLogsBtn.textContent = totalSelected > 0 ? `刪除選取項目 (${totalSelected})` : '刪除選取項目';
@@ -565,13 +578,13 @@ function updateSelectionUI() {
 
 function toggleSelectAll() {
     if (!logSelectAll) return;
-    
+
     if (logSelectAll.checked) {
         currentLogItems.forEach(item => selectedLogIds.add(item.request_id));
     } else {
         selectedLogIds.clear();
     }
-    
+
     renderLogList(currentLogItems);
     updateSelectionUI();
 }
@@ -582,13 +595,13 @@ async function deleteLog(requestId) {
         console.log('Deletion cancelled by user');
         return;
     }
-    
+
     try {
         const response = await fetch(`${LOGS_API_URL}/${requestId}`, { method: 'DELETE' });
         const data = await response.json();
-        
+
         if (!response.ok) throw new Error(data.detail || '刪除失敗');
-        
+
         showToast('日誌已刪除', 'success');
         selectedLogIds.delete(requestId);
         loadRequestLogs();
@@ -604,12 +617,12 @@ async function deleteSelectedLogs() {
         console.log('No logs selected for deletion');
         return;
     }
-    
+
     if (!confirm(`確定要刪除選取的 ${ids.length} 筆日誌嗎？此操作無法復原。`)) {
         console.log('Bulk deletion cancelled by user');
         return;
     }
-    
+
     try {
         const response = await fetch(LOGS_API_URL, {
             method: 'DELETE',
@@ -617,9 +630,9 @@ async function deleteSelectedLogs() {
             body: JSON.stringify({ request_ids: ids }),
         });
         const data = await response.json();
-        
+
         if (!response.ok) throw new Error(data.detail || '批次刪除失敗');
-        
+
         showToast(`成功刪除 ${data.deleted_count} 筆日誌`, 'success');
         selectedLogIds.clear();
         loadRequestLogs();
@@ -646,7 +659,7 @@ async function loadRequestLogs({ manual = false } = {}) {
         currentLogItems = data.items || [];
         // Clean up selectedLogIds that are no longer in the visible list (optional)
         // or keep them if they might reappear. Let's keep them for now.
-        
+
         renderLogSummary(data.summary);
         renderLogList(currentLogItems);
         updateSelectionUI();
@@ -700,19 +713,19 @@ function setupKnowledgeBase() {
 
     uploadAllBtn.addEventListener('click', uploadFiles);
     ragSearchBtn.addEventListener('click', searchKnowledge);
-    
+
     ragSearchInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') searchKnowledge();
     });
-    
+
     const initQdrantBtn = document.getElementById('initQdrantBtn');
     if (initQdrantBtn) {
         initQdrantBtn.addEventListener('click', async () => {
             if (!confirm('確定要初始化 Qdrant 集合嗎？這將會嘗試建立 Collection。')) return;
-            
+
             initQdrantBtn.disabled = true;
             initQdrantBtn.textContent = '初始化中...';
-            
+
             try {
                 const response = await fetch('/api/v1/rag/init', { method: 'POST' });
                 const data = await response.json();
@@ -734,10 +747,10 @@ function setupKnowledgeBase() {
     if (clearQdrantBtn) {
         clearQdrantBtn.addEventListener('click', async () => {
             if (!confirm('【警告】確定要清空所有資料嗎？這將會刪除並重新建立集合，所有已上傳的文件將會消失且無法復原。')) return;
-            
+
             clearQdrantBtn.disabled = true;
             clearQdrantBtn.textContent = '清空中...';
-            
+
             try {
                 const response = await fetch('/api/v1/rag/clear', { method: 'POST' });
                 const data = await response.json();
@@ -834,7 +847,7 @@ async function searchKnowledge() {
     try {
         const response = await fetch(`/api/v1/rag/search?q=${encodeURIComponent(query)}`);
         const data = await response.json();
-        
+
         if (!response.ok) throw new Error(data.detail || '搜尋失敗');
 
         if (data.data.length === 0) {
@@ -905,11 +918,11 @@ const qdrantStatusEl = document.getElementById('qdrantStatus');
 
 async function updateSystemStatus() {
     if (!connectionStatusEl) return;
-    
+
     try {
         const response = await fetch('/');
         const text = connectionStatusEl.querySelector('span:not(.status-dot)');
-        
+
         if (response.ok) {
             connectionStatusEl.className = 'status-badge online';
             text.textContent = '系統已連線';
@@ -928,12 +941,12 @@ async function updateSystemStatus() {
 
 async function updateQdrantStatus() {
     if (!qdrantStatusEl) return;
-    
+
     try {
         const response = await fetch('/api/v1/rag/health');
         const data = await response.json();
         const text = qdrantStatusEl.querySelector('span:not(.status-dot)');
-        
+
         if (data.status === 'online') {
             qdrantStatusEl.className = 'status-badge online';
             text.textContent = 'Qdrant 已連線';
@@ -972,7 +985,7 @@ function getSkillIcon(skillId) {
     return '✨';
 }
 
-function renderSkills(skills, enabledSkills = []) {
+function renderSkills(skills, enabledSkills = [], forcedSkills = []) {
     if (!skillsList) return;
 
     if (!Array.isArray(skills) || skills.length === 0) {
@@ -983,8 +996,9 @@ function renderSkills(skills, enabledSkills = []) {
     skillsList.innerHTML = skills.map((skill, index) => {
         const skillId = String(skill.skill_id || '');
         const isEnabled = enabledSkills.includes(skillId);
+        const isForced = isEnabled && forcedSkills.includes(skillId);
         const icon = getSkillIcon(skillId);
-        
+
         return `
             <div class="skill-card" style="animation-delay: ${index * 0.1}s" data-skill-id="${escapeHtml(skillId)}">
                 <div class="skill-card-header">
@@ -996,31 +1010,66 @@ function renderSkills(skills, enabledSkills = []) {
                 </div>
                 <p>${escapeHtml(skill.description || '無描述')}</p>
                 <div class="skill-footer">
-                    <label class="skill-toggle-label">
-                        <span>開啟</span>
-                        <div class="switch">
-                            <input type="checkbox" class="enabled-toggle" data-skill-id="${escapeHtml(skillId)}" ${isEnabled ? 'checked' : ''}>
-                            <span class="slider"></span>
-                        </div>
-                    </label>
+                    <div class="skill-toggle-group">
+                        <label class="skill-toggle-label">
+                            <span>開啟</span>
+                            <div class="switch">
+                                <input type="checkbox" class="enabled-toggle" data-skill-id="${escapeHtml(skillId)}" ${isEnabled ? 'checked' : ''}>
+                                <span class="slider"></span>
+                            </div>
+                        </label>
+                        <label class="skill-toggle-label">
+                            <span>強制先執行</span>
+                            <div class="switch">
+                                <input type="checkbox" class="forced-toggle" data-skill-id="${escapeHtml(skillId)}" ${isForced ? 'checked' : ''} ${isEnabled ? '' : 'disabled'}>
+                                <span class="slider"></span>
+                            </div>
+                        </label>
+                    </div>
                 </div>
+                <div class="skill-hint">啟用後可設定是否在 LLM 路由前強制執行。</div>
             </div>
         `;
     }).join('');
 
-    // 添加自動保存監聽器
     skillsList.querySelectorAll('.enabled-toggle').forEach(toggle => {
+        toggle.addEventListener('change', () => {
+            const card = toggle.closest('.skill-card');
+            const forcedToggle = card ? card.querySelector('.forced-toggle') : null;
+            if (forcedToggle) {
+                if (toggle.checked) {
+                    forcedToggle.disabled = false;
+                } else {
+                    forcedToggle.checked = false;
+                    forcedToggle.disabled = true;
+                }
+            }
+            updateSkillSettings();
+        });
+    });
+
+    skillsList.querySelectorAll('.forced-toggle').forEach(toggle => {
         toggle.addEventListener('change', () => updateSkillSettings());
     });
 }
 
-function applyEnabledSkillState(enabledSkills = []) {
-    document.querySelectorAll('.enabled-toggle').forEach(toggle => {
-        toggle.checked = enabledSkills.includes(toggle.dataset.skillId);
+function applySkillSettingsState(enabledSkills = [], forcedSkills = []) {
+    document.querySelectorAll('.skill-card').forEach(card => {
+        const enabledToggle = card.querySelector('.enabled-toggle');
+        const forcedToggle = card.querySelector('.forced-toggle');
+        if (!enabledToggle || !forcedToggle) return;
+
+        const skillId = enabledToggle.dataset.skillId;
+        const isEnabled = enabledSkills.includes(skillId);
+        const isForced = isEnabled && forcedSkills.includes(skillId);
+
+        enabledToggle.checked = isEnabled;
+        forcedToggle.checked = isForced;
+        forcedToggle.disabled = !isEnabled;
     });
 }
 
-async function fetchEnabledSkills({ silent = false } = {}) {
+async function fetchSkillSettings({ silent = false } = {}) {
     try {
         const { response, data } = await fetchJsonWithTimeout(
             `${SKILLS_API_URL}/settings`,
@@ -1032,7 +1081,10 @@ async function fetchEnabledSkills({ silent = false } = {}) {
             throw new Error(extractErrorMessage(data, '讀取技能設定失敗'));
         }
 
-        return Array.isArray(data?.enabled_skills) ? data.enabled_skills : null;
+        return {
+            enabledSkills: Array.isArray(data?.enabled_skills) ? data.enabled_skills.map(id => String(id)) : [],
+            forcedSkills: Array.isArray(data?.forced_skills) ? data.forced_skills.map(id => String(id)) : []
+        };
     } catch (error) {
         if (!silent) {
             showToast(`讀取技能設定失敗，已改用預設值: ${error.message}`, 'error');
@@ -1060,8 +1112,12 @@ async function loadSkills() {
             throw new Error('技能資料格式錯誤');
         }
 
-        const enabledSkills = await fetchEnabledSkills({ silent: true });
-        renderSkills(data, enabledSkills ?? data.map(skill => String(skill.skill_id || '')));
+        const skillSettings = await fetchSkillSettings({ silent: true });
+        const defaultEnabledSkills = data.map(skill => String(skill.skill_id || ''));
+        const enabledSkills = skillSettings ? skillSettings.enabledSkills : defaultEnabledSkills;
+        const forcedSkills = skillSettings ? skillSettings.forcedSkills.filter(skillId => enabledSkills.includes(skillId)) : [];
+
+        renderSkills(data, enabledSkills, forcedSkills);
         if (saveSkillSettingsBtn) saveSkillSettingsBtn.disabled = false;
     } catch (error) {
         skillsList.innerHTML = `<div class="loading-placeholder error">載入失敗：${escapeHtml(error.message)}</div>`;
@@ -1078,28 +1134,40 @@ async function loadSkillSettings() {
 async function updateSkillSettings() {
     const enabledSkills = Array.from(document.querySelectorAll('.enabled-toggle:checked'))
         .map(el => el.dataset.skillId);
-        
+    const forcedSkills = Array.from(document.querySelectorAll('.forced-toggle:checked'))
+        .map(el => el.dataset.skillId)
+        .filter(skillId => enabledSkills.includes(skillId));
+
     if (saveSkillSettingsBtn) {
         saveSkillSettingsBtn.disabled = true;
         saveSkillSettingsBtn.textContent = '儲存中...';
     } else {
-        // 自動保存模式下顯示一個小提示
         showToast('正在自動儲存技能設定...', 'info', 1000);
     }
-    
+
     try {
         const response = await fetch(`${SKILLS_API_URL}/settings`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                enabled_skills: enabledSkills
+                enabled_skills: enabledSkills,
+                forced_skills: forcedSkills
             })
         });
-        
+
+        const data = await response.json();
+
         if (response.ok) {
-            showToast('技能開關已自動儲存', 'success', 1500);
+            const normalizedEnabled = Array.isArray(data?.settings?.enabled_skills)
+                ? data.settings.enabled_skills.map(id => String(id))
+                : enabledSkills;
+            const normalizedForced = Array.isArray(data?.settings?.forced_skills)
+                ? data.settings.forced_skills.map(id => String(id))
+                : forcedSkills;
+
+            applySkillSettingsState(normalizedEnabled, normalizedForced);
+            showToast('技能設定已自動儲存', 'success', 1500);
         } else {
-            const data = await response.json();
             throw new Error(data.detail || '儲存失敗');
         }
     } catch (error) {
