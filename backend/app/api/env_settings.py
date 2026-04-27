@@ -142,12 +142,6 @@ ENV_SETTING_DEFINITIONS: List[Dict[str, str]] = [
         "description": "要使用的 Rerank 模型名稱，例如 BAAI/bge-reranker-v2-m3。",
     },
     {
-        "key": "LLM_STRICT_SERVICE_SCOPE_MODE",
-        "label": "嚴格服務範圍模式",
-        "input_type": "boolean",
-        "description": "啟用後，所有非純寒暄問題都必須經由 RAG 檢索且內容足夠才回答；否則回覆固定轉人工客服訊息。",
-    },
-    {
         "key": "LLM_SYSTEM_PROMPT",
         "label": "LLM System Prompt",
         "input_type": "textarea",
@@ -280,8 +274,6 @@ def _apply_runtime_settings(updated_values: Dict[str, str]) -> None:
     for key, raw_value in updated_values.items():
         if key == "LINE_ENABLE_SIGNATURE_VALIDATION":
             settings.LINE_ENABLE_SIGNATURE_VALIDATION = raw_value == "true"
-        elif key == "LLM_STRICT_SERVICE_SCOPE_MODE":
-            settings.LLM_STRICT_SERVICE_SCOPE_MODE = raw_value == "true"
         elif key == "RAG_ENABLE_RERANK":
             settings.RAG_ENABLE_RERANK = raw_value == "true"
         elif key == "LLM_TEMPERATURE":
