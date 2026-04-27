@@ -94,6 +94,12 @@ ENV_SETTING_DEFINITIONS: List[Dict[str, str]] = [
         "description": "Agent 可執行的最大決策步驟數，避免 RAG 流程太早結束。",
     },
     {
+        "key": "RAG_AGENT_MAX_SEARCH_ROUNDS",
+        "label": "RAG Agent 最大查詢輪數",
+        "input_type": "number",
+        "description": "每次 RAG 回答最多可反覆判斷、改寫問題並重新查詢的輪數，建議 2 到 4。",
+    },
+    {
         "key": "RAG_TOP_K",
         "label": "RAG 回傳筆數",
         "input_type": "number",
@@ -282,6 +288,7 @@ def _apply_runtime_settings(updated_values: Dict[str, str]) -> None:
         elif key in {
             "LLM_CONTEXT_WINDOW_SIZE",
             "AGENT_MAX_ITERATIONS",
+            "RAG_AGENT_MAX_SEARCH_ROUNDS",
             "RAG_TOP_K",
             "RAG_CANDIDATE_MULTIPLIER",
             "QDRANT_REQUEST_TIMEOUT_SECONDS",

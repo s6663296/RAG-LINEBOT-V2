@@ -6,11 +6,11 @@ description: Use when user questions require searching knowledge base, documents
 # RAG Skill
 
 ## Goal
-Determine if retrieval is necessary based on the user's query and execute RAG retrieval if required.
+Determine if retrieval is necessary based on the user's query and execute an iterative RAG Agent loop when required.
 
 ## Allowed Actions
 - `PREPROCESS_QUERY`: Execute query preprocessing before RAG. Parameters: `query` (raw query or query to be processed), `reason` (reasoning). Returns `intent`, `need_retrieval`, `rewritten_query`.
-- `CALL_RAG`: Execute retrieval. Parameters: `query` (use `rewritten_query` from `PREPROCESS_QUERY`), `top_k` (default 5), `reason` (reasoning).
+- `CALL_RAG`: Execute the internal iterative RAG Agent loop. Parameters: `query` (use `rewritten_query` from `PREPROCESS_QUERY`), `top_k` (default 5), `reason` (reasoning). The backend will search, evaluate sufficiency, rewrite the query if needed, and search again until sufficient or the configured round limit is reached.
 - `ANSWER_DIRECTLY`: Reply to the user when retrieval is not needed or after retrieval is completed.
 - `READ_SKILL_FILE`: Read reference files in this skill directory.
 
@@ -32,9 +32,16 @@ Determine if retrieval is necessary based on the user's query and execute RAG re
 2. If NOT required, call `ANSWER_DIRECTLY` immediately.
 3. If required, call `PREPROCESS_QUERY` to generate optimized search terms.
 4. If preprocessing confirms retrieval, call `CALL_RAG` with `rewritten_query`.
-5. Organize the response based on the retrieved content.
+5. Treat `CALL_RAG` as a full RAG Agent loop, not a single linear search:
+   - ask whether more search is needed;
+   - search files/documents;
+   - judge whether retrieved context is sufficient;
+   - if insufficient, rewrite the query and search again;
+   - stop when sufficient or when the configured maximum search rounds is reached.
+6. After `CALL_RAG` returns a `[RAG Agent Search Loop]` status, DO NOT call `CALL_RAG` again for the same user question unless the user provides new information.
+7. Organize the response based on the retrieved content.
 - **NATURAL PERSONA**: DO NOT explicitly mention the retrieval process, "database", "retrieved info", "reference materials", or "data" (e.g., avoid "根據檢索結果", "我的資料庫顯示", "根據資料", "已知資訊"). Provide the information naturally as your own knowledge.
-6. Call `ANSWER_DIRECTLY` to provide the final response to the user.
+8. Call `ANSWER_DIRECTLY` to provide the final response to the user.
 
 ## Output Rules
 - Responses MUST be based on the retrieved context.

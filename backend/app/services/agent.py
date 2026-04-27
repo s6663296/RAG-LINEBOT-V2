@@ -1,7 +1,8 @@
 import logging
 import json
 import re
-from typing import List, Dict, Any, Optional
+from dataclasses import dataclass, field
+from typing import List, Dict, Any, Optional, Tuple
 from app.services.query_processor import query_processor, ProcessedQuery
 from app.services.embedding import embedding_service
 from app.services.vector_db import vector_db_service
@@ -11,12 +12,40 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+
+@dataclass
+class RAGSearchRound:
+    """單次 RAG Agent 查詢、判斷與改寫紀錄。"""
+
+    round_number: int
+    query: str
+    context: str
+    sufficient: bool = False
+    reason: str = ""
+    missing_info: str = ""
+    next_query: str = ""
+
+
+@dataclass
+class RAGAgentLoopResult:
+    """RAG Agent 反覆檢索流程結果。"""
+
+    context: str
+    next_step: int
+    sufficient: bool
+    rounds: List[RAGSearchRound] = field(default_factory=list)
+    final_query: str = ""
+    note: str = ""
+    processed_query: Optional[ProcessedQuery] = None
+
+
 class AgentService:
     """
-    進化後的 AgentService：支援 Skill 機制與結構化決策。
+    進化後的 AgentService：支援 Skill 機制、結構化決策與反覆式 RAG Agent 流程。
     """
 
     MAX_ITERATIONS = 8
+    DEFAULT_RAG_AGENT_MAX_SEARCH_ROUNDS = 3
 
     async def generate_response(self, user_text: str, history: Optional[List[Dict[str, str]]] = None, status_callback: Optional[Any] = None) -> str:
         """
@@ -45,7 +74,7 @@ class AgentService:
         ]
         available_skill_ids = {skill["skill_id"] for skill in available_skills}
 
-        global_style_content = ""
+        global_style_content = self._get_global_style_content()
         active_style_skill_ids = []
 
         # 初始系統提示詞 (Router 模式)
@@ -55,6 +84,7 @@ class AgentService:
         loaded_skills = {skill_id for skill_id in forced_skill_ids if skill_id in available_skill_ids}
         retrieved_context = ""
         rag_retrieval_done = False
+        rag_loop_result: Optional[RAGAgentLoopResult] = None
         current_step = 1
 
         if status_callback:
@@ -63,23 +93,29 @@ class AgentService:
                 await self._report_status(status_callback, current_step, "載入技能", f"正在載入強制技能: {skill_id}")
                 current_step += 1
 
-        # 特例：若 rag 被設定為強制技能，先做查詢前處理與檢索，再進入 LLM 決策。
+        # 特例：若 rag 被設定為強制技能，先做查詢前處理與反覆式 RAG，再進入 LLM 決策。
         if "rag" in loaded_skills:
-            logger.info("Forced skill 'rag' enabled. Running retrieval before router loop.")
+            logger.info("Forced skill 'rag' enabled. Running iterative RAG agent loop before router loop.")
             processed_query = await self._preprocess_query(user_text, status_callback, step=current_step)
             current_step += 1
             
             forced_query = processed_query.rewritten_query or user_text
-            rag_context, next_step = await self._execute_rag(forced_query, settings.RAG_TOP_K, status_callback, step=current_step)
-            current_step = next_step
+            rag_loop_result = await self._run_rag_agent_loop(
+                user_text=user_text,
+                initial_query=forced_query,
+                top_k=settings.RAG_TOP_K,
+                status_callback=status_callback,
+                step=current_step,
+                processed_query=processed_query,
+            )
+            current_step = rag_loop_result.next_step
             
-            rag_retrieval_done = True
+            rag_retrieval_done = bool(processed_query.need_retrieval and rag_loop_result.rounds)
             retrieved_context = (
                 "[Forced Skill Execution]\n"
                 "skill: rag\n"
-                "note: RAG retrieval was executed before LLM routing.\n"
-                f"{self._format_processed_query_context(processed_query)}\n\n"
-                f"{rag_context}"
+                "note: Iterative RAG Agent loop was executed before LLM routing.\n"
+                f"{rag_loop_result.context}"
             )
 
         max_iterations = max(3, int(getattr(settings, "AGENT_MAX_ITERATIONS", self.MAX_ITERATIONS)))
@@ -109,9 +145,10 @@ class AgentService:
                         "<instruction_agent_phase>\n"
                         "1. You are currently in the DECISION-MAKING phase. Your goal is to determine IF you need to use tools (like RAG).\n"
                         "2. If a knowledge-base question appears and 'rag' is not loaded yet, call READ_SKILL('rag') first; if 'rag' is already loaded, directly use PREPROCESS_QUERY/CALL_RAG as needed.\n"
-                        "3. DO NOT output the fallback message ('Sorry, I cannot answer...') as natural language now. "
+                        "3. When CALL_RAG has already produced a [RAG Agent Search Loop] status, do NOT repeat CALL_RAG for the same question; use ANSWER_DIRECTLY based on the loop outcome.\n"
+                        "4. DO NOT output the fallback message ('Sorry, I cannot answer...') as natural language now. "
                         "You can only use it later in the 'answer' field of ANSWER_DIRECTLY IF AND ONLY IF you have already performed retrieval and found no info.\n"
-                        "4. ALWAYS output a single JSON object. DO NOT output plain text.\n"
+                        "5. ALWAYS output a single JSON object. DO NOT output plain text.\n"
                         "</instruction_agent_phase>"
                     )
                 })
@@ -181,7 +218,15 @@ class AgentService:
                 if repeated_action_count >= 2:
                     logger.warning(f"Repeated action detected: {action_signature}")
                     if rag_retrieval_done and retrieved_context:
-                        return await self._generate_final_answer(user_text, current_history, retrieved_context, status_callback)
+                        return await self._generate_final_answer(
+                            user_text,
+                            current_history,
+                            retrieved_context,
+                            status_callback,
+                            step=current_step,
+                            loaded_skills=loaded_skills,
+                            global_style_content=global_style_content,
+                        )
                     raise Exception("I am unable to complete the retrieval process at the moment. Please try a more specific question. (Repeated Action Loop)")
                 
                 logger.info(f"Step {i+1} Action: {action} (Reason: {reason})")
@@ -200,12 +245,20 @@ class AgentService:
                             retrieved_context += self._format_processed_query_context(processed_query)
                             continue
                         if processed_query.need_retrieval:
-                            logger.warning("RAG skill attempted ANSWER_DIRECTLY before retrieval; forcing CALL_RAG.")
+                            logger.warning("RAG skill attempted ANSWER_DIRECTLY before retrieval; forcing iterative RAG loop.")
                             query = processed_query.rewritten_query or user_text
-                            rag_context, next_step = await self._execute_rag(query, settings.RAG_TOP_K, status_callback, step=current_step)
-                            current_step = next_step
-                            retrieved_context = rag_context
-                            rag_retrieval_done = True
+                            rag_loop_result = await self._run_rag_agent_loop(
+                                user_text=user_text,
+                                initial_query=query,
+                                top_k=settings.RAG_TOP_K,
+                                status_callback=status_callback,
+                                step=current_step,
+                                processed_query=processed_query,
+                            )
+                            current_step = rag_loop_result.next_step
+                            processed_query = rag_loop_result.processed_query or processed_query
+                            retrieved_context = rag_loop_result.context
+                            rag_retrieval_done = bool(rag_loop_result.rounds)
                             continue
                     return self._sanitize_final_answer(answer)
 
@@ -256,26 +309,19 @@ class AgentService:
                         raise Exception("RAG skill is currently not enabled, cannot perform retrieval.")
 
                     query = action_data.get("query") or (processed_query.rewritten_query if processed_query else user_text)
-                    if processed_query is None:
-                        logger.warning("CALL_RAG requested before preprocessing; forcing PREPROCESS_QUERY first.")
-                        processed_query = await self._preprocess_query(query, status_callback, step=current_step)
-                        current_step += 1
-                        retrieved_context += self._format_processed_query_context(processed_query)
-                        if not processed_query.need_retrieval:
-                            retrieved_context += "\n\n[Retrieval Skipped]\nPreprocessing indicates this question does not need knowledge base retrieval. Please respond directly to the user."
-                            continue
-                        query = processed_query.rewritten_query or query
-
-                    if not processed_query.need_retrieval:
-                        logger.info("CALL_RAG skipped because processed query does not need retrieval.")
-                        retrieved_context += "\n\n[Retrieval Skipped]\nPreprocessing indicates this question does not need knowledge base retrieval. Please respond directly to the user."
-                        continue
-
                     top_k = int(action_data.get("top_k") or settings.RAG_TOP_K)
-                    rag_context, next_step = await self._execute_rag(query, top_k, status_callback, step=current_step)
-                    current_step = next_step
-                    retrieved_context = rag_context
-                    rag_retrieval_done = True
+                    rag_loop_result = await self._run_rag_agent_loop(
+                        user_text=user_text,
+                        initial_query=query,
+                        top_k=top_k,
+                        status_callback=status_callback,
+                        step=current_step,
+                        processed_query=processed_query,
+                    )
+                    current_step = rag_loop_result.next_step
+                    processed_query = rag_loop_result.processed_query or processed_query
+                    retrieved_context = rag_loop_result.context
+                    rag_retrieval_done = bool(processed_query and processed_query.need_retrieval and rag_loop_result.rounds)
                     continue
 
                 elif action == "READ_SKILL_FILE":
@@ -312,15 +358,219 @@ class AgentService:
                 raise e
 
         if rag_retrieval_done and retrieved_context:
-            return await self._generate_final_answer(user_text, current_history, retrieved_context, status_callback, step=current_step)
+            return await self._generate_final_answer(
+                user_text,
+                current_history,
+                retrieved_context,
+                status_callback,
+                step=current_step,
+                loaded_skills=loaded_skills,
+                global_style_content=global_style_content,
+            )
 
         if "rag" in loaded_skills and processed_query and processed_query.need_retrieval:
             query = processed_query.rewritten_query or user_text
-            rag_context, next_step = await self._execute_rag(query, settings.RAG_TOP_K, status_callback, step=current_step)
-            current_step = next_step
-            return await self._generate_final_answer(user_text, current_history, rag_context, status_callback, step=current_step)
+            rag_loop_result = await self._run_rag_agent_loop(
+                user_text=user_text,
+                initial_query=query,
+                top_k=settings.RAG_TOP_K,
+                status_callback=status_callback,
+                step=current_step,
+                processed_query=processed_query,
+            )
+            current_step = rag_loop_result.next_step
+            return await self._generate_final_answer(
+                user_text,
+                current_history,
+                rag_loop_result.context,
+                status_callback,
+                step=current_step,
+                loaded_skills=loaded_skills,
+                global_style_content=global_style_content,
+            )
 
         raise Exception("I apologize, but I've taken too many steps to process your request. Please try a more specific question. (Max Iterations)")
+
+    async def _run_rag_agent_loop(
+        self,
+        user_text: str,
+        initial_query: str,
+        top_k: int,
+        status_callback: Optional[Any] = None,
+        step: int = 1,
+        processed_query: Optional[ProcessedQuery] = None,
+    ) -> RAGAgentLoopResult:
+        """
+        執行 RAG Agent 反覆流程：判斷是否需要查、查文件、判斷是否足夠、不足時改寫查詢再查。
+        """
+        current_step = step
+        top_k = max(1, int(top_k or settings.RAG_TOP_K))
+        max_rounds = max(
+            1,
+            int(getattr(settings, "RAG_AGENT_MAX_SEARCH_ROUNDS", self.DEFAULT_RAG_AGENT_MAX_SEARCH_ROUNDS)),
+        )
+
+        if processed_query is None:
+            processed_query = await self._preprocess_query(initial_query or user_text, status_callback, step=current_step)
+            current_step += 1
+
+        if not processed_query.need_retrieval:
+            note = (
+                "[Retrieval Skipped]\n"
+                "Preprocessing indicates this question does not need knowledge base retrieval. "
+                "Please respond directly to the user."
+            )
+            return RAGAgentLoopResult(
+                context=f"{self._format_processed_query_context(processed_query)}\n\n{note}",
+                next_step=current_step,
+                sufficient=True,
+                rounds=[],
+                final_query=processed_query.rewritten_query or initial_query or user_text,
+                note="retrieval_not_required",
+                processed_query=processed_query,
+            )
+
+        current_query = (initial_query or processed_query.rewritten_query or user_text).strip()
+        seen_queries = set()
+        rounds: List[RAGSearchRound] = []
+        stop_reason = ""
+
+        for round_number in range(1, max_rounds + 1):
+            if not current_query:
+                current_query = (processed_query.rewritten_query or user_text).strip()
+
+            normalized_query = self._normalize_query_key(current_query)
+            if normalized_query in seen_queries:
+                stop_reason = f"Repeated query detected: {current_query}"
+                logger.warning(stop_reason)
+                break
+            seen_queries.add(normalized_query)
+
+            if status_callback:
+                await self._report_status(
+                    status_callback,
+                    current_step,
+                    "問：需要查嗎？",
+                    f"第 {round_number} 輪判斷需要查詢知識庫：{current_query}",
+                )
+                current_step += 1
+
+            rag_context, current_step = await self._execute_rag(
+                current_query,
+                top_k,
+                status_callback,
+                step=current_step,
+                round_number=round_number,
+            )
+
+            if status_callback:
+                await self._report_status(
+                    status_callback,
+                    current_step,
+                    "判斷是否足夠",
+                    f"第 {round_number} 輪正在檢查檢索內容是否足以回答",
+                )
+                current_step += 1
+
+            evaluation = await self._evaluate_rag_sufficiency(
+                user_text=user_text,
+                current_query=current_query,
+                retrieved_context=rag_context,
+                round_number=round_number,
+                max_rounds=max_rounds,
+            )
+            sufficient = self._coerce_bool(evaluation.get("sufficient"), default=False)
+            reason = str(evaluation.get("reason") or "").strip()
+            missing_info = str(evaluation.get("missing_info") or "").strip()
+            suggested_query = str(
+                evaluation.get("rewritten_query")
+                or evaluation.get("next_query")
+                or evaluation.get("query")
+                or ""
+            ).strip()
+            selected_next_query = ""
+
+            if not sufficient and round_number < max_rounds:
+                selected_next_query = self._select_next_query(
+                    candidate_query=suggested_query,
+                    user_text=user_text,
+                    processed_query=processed_query,
+                    current_query=current_query,
+                    seen_queries=seen_queries,
+                )
+
+            rounds.append(
+                RAGSearchRound(
+                    round_number=round_number,
+                    query=current_query,
+                    context=rag_context,
+                    sufficient=sufficient,
+                    reason=reason,
+                    missing_info=missing_info,
+                    next_query=selected_next_query,
+                )
+            )
+
+            if sufficient:
+                stop_reason = reason or "Retrieved context is sufficient."
+                if status_callback:
+                    await self._report_status(
+                        status_callback,
+                        current_step,
+                        "判斷結果",
+                        f"第 {round_number} 輪資訊足夠，準備產生答案",
+                    )
+                    current_step += 1
+                break
+
+            if status_callback:
+                detail = f"第 {round_number} 輪資訊不足"
+                if selected_next_query:
+                    detail += f"，改寫問題並再次查詢：{selected_next_query}"
+                else:
+                    detail += "，沒有可用的新查詢語句"
+                await self._report_status(status_callback, current_step, "必要時再查", detail)
+                current_step += 1
+
+            if round_number >= max_rounds:
+                stop_reason = f"Reached max search rounds ({max_rounds})."
+                break
+
+            if not selected_next_query:
+                stop_reason = "Evaluator did not provide a new usable search query."
+                break
+
+            current_query = selected_next_query
+
+        if not rounds:
+            context = (
+                f"{self._format_processed_query_context(processed_query)}\n\n"
+                "[RAG Agent Search Loop]\n"
+                "final_sufficiency: insufficient\n"
+                f"stop_reason: {stop_reason or 'No retrieval was executed.'}\n"
+                "instruction: Retrieval did not produce usable context. Use the configured fallback response instead of guessing."
+            )
+            return RAGAgentLoopResult(
+                context=context,
+                next_step=current_step,
+                sufficient=False,
+                rounds=[],
+                final_query=current_query,
+                note=stop_reason,
+                processed_query=processed_query,
+            )
+
+        sufficient = any(item.sufficient for item in rounds)
+        context = self._format_rag_loop_context(processed_query, rounds, stop_reason)
+        return RAGAgentLoopResult(
+            context=context,
+            next_step=current_step,
+            sufficient=sufficient,
+            rounds=rounds,
+            final_query=rounds[-1].query,
+            note=stop_reason,
+            processed_query=processed_query,
+        )
 
     async def _preprocess_query(self, query: str, status_callback: Optional[Any] = None, step: int = 1) -> ProcessedQuery:
         """
@@ -341,16 +591,24 @@ class AgentService:
             f"rewritten_query: {processed_query.rewritten_query}"
         )
 
-    async def _execute_rag(self, query: str, top_k: int = 5, status_callback: Optional[Any] = None, step: int = 1) -> (str, int):
+    async def _execute_rag(
+        self,
+        query: str,
+        top_k: int = 5,
+        status_callback: Optional[Any] = None,
+        step: int = 1,
+        round_number: Optional[int] = None,
+    ) -> Tuple[str, int]:
         """
         執行 RAG 檢索邏輯。回傳 (context_str, next_step_num)
         """
         from app.services.rerank import rerank_service
         from app.services.rag_manager import rag_manager
         current_step = step
+        round_prefix = f"第 {round_number} 輪" if round_number else ""
 
         if status_callback:
-            await self._report_status(status_callback, current_step, "知識檢索", f"正在進行混合檢索 (Dense + BM25) 搜尋相關資料")
+            await self._report_status(status_callback, current_step, "查文件", f"{round_prefix}正在進行混合檢索 (Dense + BM25) 搜尋相關資料")
             current_step += 1
 
         # 第一階段：取回較多候選者 (Candidates)
@@ -366,7 +624,7 @@ class AgentService:
         # 第二階段：Rerank
         if settings.RAG_ENABLE_RERANK and len(hybrid_results) > 1:
             if status_callback:
-                await self._report_status(status_callback, current_step, "精確排序", "正在使用 Reranker 對混合檢索結果進行重排")
+                await self._report_status(status_callback, current_step, "精確排序", f"{round_prefix}正在使用 Reranker 對混合檢索結果進行重排")
                 current_step += 1
             
             documents = [res.get("payload", {}).get("text", "") for res in hybrid_results]
@@ -404,19 +662,202 @@ class AgentService:
         
         return "\n\n".join(context_parts), current_step
 
-    async def _generate_final_answer(self, user_text: str, history: List[Dict[str, str]], retrieved_context: str, status_callback: Optional[Any] = None, step: int = 1) -> str:
+    async def _evaluate_rag_sufficiency(
+        self,
+        user_text: str,
+        current_query: str,
+        retrieved_context: str,
+        round_number: int,
+        max_rounds: int,
+    ) -> Dict[str, Any]:
+        """
+        讓模型判斷本輪檢索內容是否足以回答；不足時要求改寫下一輪查詢。
+        """
+        no_results = self._context_indicates_no_results(retrieved_context)
+        fallback = {
+            "sufficient": not no_results,
+            "reason": "Evaluator unavailable; using retrieved context as-is." if not no_results else "No relevant information was found.",
+            "missing_info": "" if not no_results else "No relevant context was retrieved.",
+            "rewritten_query": "",
+        }
+
+        messages = [
+            {
+                "role": "system",
+                "content": """You are an internal RAG Agent evaluator.
+
+Your job is NOT to answer the user. Your job is to inspect retrieved context and decide whether it is sufficient to answer the user's question.
+
+Output ONLY one pure JSON object with this schema:
+{
+  "sufficient": true,
+  "reason": "brief reason",
+  "missing_info": "what is missing if insufficient",
+  "rewritten_query": "better Traditional Chinese search query if insufficient, otherwise empty string"
+}
+
+Evaluation rules:
+- Set sufficient=true ONLY when the retrieved context directly contains enough facts to answer the user's question.
+- Set sufficient=false if the context is empty, generic, off-topic, contradictory, or lacks key facts.
+- If insufficient and another round is allowed, rewrite the query to target the missing facts. Keep important original keywords and add synonyms or related legal/product/company terms when useful.
+- Do not mention internal tools. Do not output Markdown. Do not output multiple JSON objects.""",
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"<user_question>\n{user_text}\n</user_question>\n\n"
+                    f"<current_query>\n{current_query}\n</current_query>\n\n"
+                    f"<round>\n{round_number} of {max_rounds}\n</round>\n\n"
+                    f"<retrieved_context>\n{retrieved_context}\n</retrieved_context>"
+                ),
+            },
+        ]
+
+        try:
+            result = await llm_client.chat_completion(
+                base_url=settings.LLM_BASE_URL,
+                api_key=settings.LLM_API_KEY,
+                model_id=settings.LLM_MODEL_ID,
+                messages=messages,
+                temperature=0.0,
+                timeout_seconds=settings.LLM_REQUEST_TIMEOUT_SECONDS,
+            )
+            if "error" in result:
+                logger.error(f"RAG sufficiency evaluator LLM error: {result}")
+                return fallback
+
+            raw_content = self._extract_content(result)
+            data = self._parse_json_response(raw_content)
+            if not data:
+                logger.warning(f"RAG sufficiency evaluator returned invalid JSON: {raw_content[:200]}")
+                return fallback
+
+            return {
+                "sufficient": self._coerce_bool(data.get("sufficient"), default=not no_results),
+                "reason": str(data.get("reason") or fallback["reason"]).strip(),
+                "missing_info": str(data.get("missing_info") or "").strip(),
+                "rewritten_query": str(
+                    data.get("rewritten_query")
+                    or data.get("next_query")
+                    or data.get("query")
+                    or ""
+                ).strip(),
+            }
+        except Exception as exc:
+            logger.exception(f"Unexpected error in RAG sufficiency evaluator: {exc}")
+            return fallback
+
+    def _format_rag_loop_context(self, processed_query: ProcessedQuery, rounds: List[RAGSearchRound], stop_reason: str) -> str:
+        """
+        將反覆式 RAG Agent 搜尋結果整理成下一輪決策與最終回答可使用的上下文。
+        """
+        final_sufficiency = "sufficient" if any(item.sufficient for item in rounds) else "insufficient"
+        parts = [
+            self._format_processed_query_context(processed_query),
+            "\n\n[RAG Agent Search Loop]",
+            f"final_sufficiency: {final_sufficiency}",
+            f"rounds_executed: {len(rounds)}",
+            f"stop_reason: {stop_reason or 'RAG Agent loop completed.'}",
+            (
+                "instruction: The iterative RAG Agent loop has already completed for this user question. "
+                "Do not call CALL_RAG again for the same question unless the user provides new information. "
+                "Use ANSWER_DIRECTLY based on final_sufficiency and the retrieved context."
+            ),
+        ]
+
+        for item in rounds:
+            parts.append(
+                "\n"
+                f"[Search Round {item.round_number}]\n"
+                f"query: {item.query}\n"
+                f"sufficient: {str(item.sufficient).lower()}\n"
+                f"reason: {item.reason}\n"
+                f"missing_info: {item.missing_info}\n"
+                f"next_query: {item.next_query}\n"
+                f"retrieved_context:\n{item.context}"
+            )
+
+        if final_sufficiency == "insufficient":
+            parts.append(
+                "\n[Insufficient Context Policy]\n"
+                "If the collected context still does not directly support an answer, reply with the configured fallback message instead of guessing."
+            )
+
+        return "\n".join(parts)
+
+    def _select_next_query(
+        self,
+        candidate_query: str,
+        user_text: str,
+        processed_query: ProcessedQuery,
+        current_query: str,
+        seen_queries: set,
+    ) -> str:
+        """
+        選擇下一輪查詢語句，避免重複查詢造成無限迴圈。
+        """
+        candidates = [
+            candidate_query,
+            processed_query.rewritten_query,
+            user_text,
+        ]
+        current_key = self._normalize_query_key(current_query)
+
+        for candidate in candidates:
+            query = (candidate or "").strip()
+            query_key = self._normalize_query_key(query)
+            if query and query_key and query_key != current_key and query_key not in seen_queries:
+                return query
+        return ""
+
+    def _normalize_query_key(self, query: str) -> str:
+        return re.sub(r"\s+", " ", (query or "").strip().lower())
+
+    def _context_indicates_no_results(self, context: str) -> bool:
+        normalized = (context or "").strip()
+        if not normalized:
+            return True
+        no_result_markers = [
+            "(No relevant information found)",
+            "(No relevant information found after filtering)",
+        ]
+        return any(marker in normalized for marker in no_result_markers)
+
+    def _coerce_bool(self, value: Any, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"true", "1", "yes", "y"}:
+                return True
+            if normalized in {"false", "0", "no", "n"}:
+                return False
+        if isinstance(value, (int, float)):
+            return bool(value)
+        return default
+
+    async def _generate_final_answer(
+        self,
+        user_text: str,
+        history: List[Dict[str, str]],
+        retrieved_context: str,
+        status_callback: Optional[Any] = None,
+        step: int = 1,
+        loaded_skills: Optional[set] = None,
+        global_style_content: str = "",
+    ) -> str:
         """
         當 Agent 已取得檢索資料但模型未正確輸出 ANSWER_DIRECTLY 時，強制走一次回答生成。
         """
         if status_callback:
             await self._report_status(status_callback, step, "整合回答", "正在整合所有資料並產生最終回覆")
-            current_step += 1
 
         configured_system_prompt = self._get_configured_system_prompt()
+        loaded_skill_ids = loaded_skills or set()
         
         # 整合所有已載入技能的內容作為參考
         retrieved_skill_context = ""
-        for skill_id in sorted(loaded_skills):
+        for skill_id in sorted(loaded_skill_ids):
             content = skill_service.get_skill_content(skill_id)
             if content:
                 retrieved_skill_context += f"\n\n[Loaded Skill: {skill_id}]\n{content}"
@@ -439,9 +880,15 @@ class AgentService:
             "role": "system",
             "content": (
                 f"<knowledge_supplement>\n{retrieved_context}\n{retrieved_skill_context}\n</knowledge_supplement>\n\n"
+                "<rag_agent_answer_rules>\n"
+                "- The knowledge_supplement may contain multiple [Search Round] sections from an iterative RAG Agent loop.\n"
+                "- If final_sufficiency is insufficient, or the supplement does not directly support a factual answer, reply exactly: 抱歉，我目前不太確定這方面的細節，建議您可以聯絡真人客服為您提供進一步協助。\n"
+                "- If final_sufficiency is sufficient, answer only with facts supported by the supplement.\n"
+                "- Do not invent missing facts, prices, policies, legal rules, dates, names, or procedures.\n"
+                "</rag_agent_answer_rules>\n\n"
                 "<interaction_style>\n"
                 "- Respond in Traditional Chinese (zh-TW).\n"
-                "- NATURAL PERSONA: You MUST act as a helpful human assistant. NEVER mention 'database', 'reference materials', 'retrieval', 'data', or 'known info' to the user.\n"
+                "- NATURAL PERSONA: You MUST act as a helpful human assistant. NEVER mention 'database', 'reference materials', 'retrieval', 'data', 'RAG', 'Search Round', or 'known info' to the user.\n"
                 "- Do NOT use phrases like 'According to the data' or 'The information shows'.\n"
                 "- Integrate the knowledge naturally into your own response as if you've always known it.\n"
                 "</interaction_style>"
@@ -515,7 +962,7 @@ Available Actions:
   "reason": "Why preprocessing is needed"
 }}
 
-5. CALL_RAG: (RAG Only) Execute knowledge retrieval.
+5. CALL_RAG: (RAG Only) Execute the iterative RAG Agent loop.
 {{
   "action": "CALL_RAG",
   "query": "The search query",
@@ -535,7 +982,9 @@ Rules:
 - Think about what information or action is needed.
 - Use the most specific available action.
 - Check results and continue until the task is completed or blocked.
-- Once RAG materials are obtained, use ANSWER_DIRECTLY.
+- CALL_RAG runs an internal loop that asks whether to search, searches documents, judges sufficiency, rewrites the query when insufficient, and searches again until sufficient or the configured round limit is reached.
+- Once Current RAG flow status contains [RAG Agent Search Loop], do NOT repeat CALL_RAG for the same user question. Use ANSWER_DIRECTLY based on final_sufficiency and the provided context.
+- If final_sufficiency is insufficient, use ANSWER_DIRECTLY with the configured fallback message instead of guessing.
 - DO NOT output multiple JSON objects at once.
 </tool_use>
 
@@ -555,6 +1004,15 @@ Skills are task-specific instruction bundles.
 2. If match, READ_SKILL.
 3. If already loaded, do NOT repeat READ_SKILL; use skill-specific actions or ANSWER_DIRECTLY.
 </skill_loading_protocol>
+
+<rag_agent_loop>
+When RAG is used, CALL_RAG triggers this internal loop:
+1. Ask whether more search is needed.
+2. Search files/documents.
+3. Judge whether the retrieved information is sufficient.
+4. If insufficient, rewrite the query and search again.
+5. Stop when sufficient or the maximum search rounds are reached, then answer or fallback.
+</rag_agent_loop>
 
 <safety>
 - Do not help bypass security or hide malicious activity.

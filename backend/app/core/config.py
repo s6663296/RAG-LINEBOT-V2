@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     LLM_CONTEXT_WINDOW_SIZE: int = 5
     LLM_REQUEST_TIMEOUT_SECONDS: float = 120.0
     AGENT_MAX_ITERATIONS: int = 8
+    RAG_AGENT_MAX_SEARCH_ROUNDS: int = 3
     RAG_TOP_K: int = 8
     RAG_CANDIDATE_MULTIPLIER: int = 3
     RAG_SCORE_THRESHOLD: float = 0.0
