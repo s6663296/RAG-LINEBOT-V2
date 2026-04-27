@@ -241,24 +241,37 @@ class AgentService:
                     answer = action_data.get("answer", "I cannot answer this question directly.")
 
                     if "rag" in loaded_skills:
-                        if rag_loop_result is None or not rag_loop_result.rounds:
+                        # 如果需要檢索但尚未執行過 RAG 流程，則強制執行一次。
+                        if rag_loop_result is None:
                             if processed_query is None:
                                 processed_query = await self._preprocess_query(user_text, status_callback, step=current_step)
                                 current_step += 1
-                            query = processed_query.rewritten_query or user_text
-                            rag_loop_result = await self._run_rag_agent_loop(
-                                user_text=user_text,
-                                initial_query=query,
-                                top_k=settings.RAG_TOP_K,
-                                status_callback=status_callback,
-                                step=current_step,
-                                processed_query=processed_query,
-                            )
-                            current_step = rag_loop_result.next_step
-                            processed_query = rag_loop_result.processed_query or processed_query
-                            retrieved_context = rag_loop_result.context
-                            rag_retrieval_done = bool(rag_loop_result.rounds)
-                            continue
+                            
+                            if processed_query.need_retrieval:
+                                query = processed_query.rewritten_query or user_text
+                                rag_loop_result = await self._run_rag_agent_loop(
+                                    user_text=user_text,
+                                    initial_query=query,
+                                    top_k=settings.RAG_TOP_K,
+                                    status_callback=status_callback,
+                                    step=current_step,
+                                    processed_query=processed_query,
+                                )
+                                current_step = rag_loop_result.next_step
+                                processed_query = rag_loop_result.processed_query or processed_query
+                                retrieved_context = rag_loop_result.context
+                                rag_retrieval_done = bool(rag_loop_result.rounds)
+                                continue
+                            else:
+                                # 不需要檢索，標記為已完成 RAG 流程（跳過）
+                                rag_retrieval_done = True
+                                rag_loop_result = RAGAgentLoopResult(
+                                    context=self._format_processed_query_context(processed_query),
+                                    next_step=current_step,
+                                    sufficient=True,
+                                    rounds=[],
+                                    processed_query=processed_query
+                                )
 
                     if "rag" in loaded_skills and not rag_retrieval_done:
                         if processed_query is None:
@@ -391,25 +404,6 @@ class AgentService:
                 global_style_content=global_style_content,
             )
 
-            query = processed_query.rewritten_query or user_text
-            rag_loop_result = await self._run_rag_agent_loop(
-                user_text=user_text,
-                initial_query=query,
-                top_k=settings.RAG_TOP_K,
-                status_callback=status_callback,
-                step=current_step,
-                processed_query=processed_query,
-            )
-            current_step = rag_loop_result.next_step
-            return await self._generate_final_answer(
-                user_text,
-                current_history,
-                rag_loop_result.context,
-                status_callback,
-                step=current_step,
-                loaded_skills=loaded_skills,
-                global_style_content=global_style_content,
-            )
 
         raise Exception("I apologize, but I've taken too many steps to process your request. Please try a more specific question. (Max Iterations)")
 
