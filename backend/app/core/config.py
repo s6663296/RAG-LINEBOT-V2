@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     RAG_TOP_K: int = 8
     RAG_CANDIDATE_MULTIPLIER: int = 3
     RAG_SCORE_THRESHOLD: float = 0.0
+    LLM_STRICT_SERVICE_SCOPE_MODE: bool = False
     LLM_SYSTEM_PROMPT: str = "You are a professional and friendly customer service assistant. Please respond in Traditional Chinese (zh-TW)."
     LLM_ROUTER_PROMPT: str = """You are a professional RAG system Router.
 

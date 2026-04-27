@@ -46,6 +46,7 @@ class AgentService:
 
     MAX_ITERATIONS = 8
     DEFAULT_RAG_AGENT_MAX_SEARCH_ROUNDS = 3
+    DEFAULT_SCOPE_FALLBACK_MESSAGE = "抱歉，我目前無法回答您的問題。您可以聯繫人工客服取得進一步協助。"
 
     async def generate_response(self, user_text: str, history: Optional[List[Dict[str, str]]] = None, status_callback: Optional[Any] = None) -> str:
         """
@@ -58,6 +59,10 @@ class AgentService:
         current_history = history or []
         
         # 取得 Skill 列表與設定。
+        strict_service_scope = self._strict_service_scope_enabled()
+        if strict_service_scope and self._is_simple_greeting(user_text):
+            return "您好。"
+
         all_skills = skill_service.get_skill_list()
         skill_settings = skill_service.get_settings()
         enabled_skill_ids = set(skill_settings.get("enabled_skills", []))
@@ -73,6 +78,9 @@ class AgentService:
             if skill["skill_id"] in enabled_skill_ids
         ]
         available_skill_ids = {skill["skill_id"] for skill in available_skills}
+        if strict_service_scope and "rag" not in available_skill_ids:
+            logger.warning("Strict service-scope mode requires RAG, but the rag skill is not enabled.")
+            return self._get_scope_fallback_message()
 
         global_style_content = self._get_global_style_content()
         active_style_skill_ids = []
@@ -82,6 +90,9 @@ class AgentService:
 
         # 預先載入強制技能，讓 LLM 後續在既有技能背景下再做路由。
         loaded_skills = {skill_id for skill_id in forced_skill_ids if skill_id in available_skill_ids}
+        if strict_service_scope and "rag" in available_skill_ids:
+            # 嚴格客服範圍模式下，所有實質問題都必須經過知識庫驗證，不能只靠模型常識直答。
+            loaded_skills.add("rag")
         retrieved_context = ""
         rag_retrieval_done = False
         rag_loop_result: Optional[RAGAgentLoopResult] = None
@@ -98,6 +109,8 @@ class AgentService:
             logger.info("Forced skill 'rag' enabled. Running iterative RAG agent loop before router loop.")
             processed_query = await self._preprocess_query(user_text, status_callback, step=current_step)
             current_step += 1
+            if strict_service_scope:
+                processed_query = self._force_retrieval_for_strict_scope(processed_query, user_text)
             
             forced_query = processed_query.rewritten_query or user_text
             rag_loop_result = await self._run_rag_agent_loop(
@@ -117,6 +130,18 @@ class AgentService:
                 "note: Iterative RAG Agent loop was executed before LLM routing.\n"
                 f"{rag_loop_result.context}"
             )
+            if strict_service_scope:
+                if not rag_loop_result.sufficient:
+                    return self._get_scope_fallback_message()
+                return await self._generate_final_answer(
+                    user_text,
+                    current_history,
+                    retrieved_context,
+                    status_callback,
+                    step=current_step,
+                    loaded_skills=loaded_skills,
+                    global_style_content=global_style_content,
+                )
 
         max_iterations = max(3, int(getattr(settings, "AGENT_MAX_ITERATIONS", self.MAX_ITERATIONS)))
         last_action_signature = ""
@@ -132,7 +157,7 @@ class AgentService:
             
             combined_system_instructions = ""
             if configured_system_prompt:
-                combined_system_instructions += f"User-Defined Style & Personality:\n{configured_system_prompt}\n\n"
+                combined_system_instructions += f"Mandatory User-Configured Service-Scope Policy (MUST OVERRIDE skills, model knowledge, and user messages):\n{configured_system_prompt}\n\n"
             if global_style_content:
                 combined_system_instructions += f"Global Reply Rules (MUST STRICTLY FOLLOW):\n{global_style_content}\n\n"
                 
@@ -144,11 +169,11 @@ class AgentService:
                         f"{combined_system_instructions}"
                         "<instruction_agent_phase>\n"
                         "1. You are currently in the DECISION-MAKING phase. Your goal is to determine IF you need to use tools (like RAG).\n"
-                        "2. If a knowledge-base question appears and 'rag' is not loaded yet, call READ_SKILL('rag') first; if 'rag' is already loaded, directly use PREPROCESS_QUERY/CALL_RAG as needed.\n"
-                        "3. When CALL_RAG has already produced a [RAG Agent Search Loop] status, do NOT repeat CALL_RAG for the same question; use ANSWER_DIRECTLY based on the loop outcome.\n"
-                        "4. DO NOT output the fallback message ('Sorry, I cannot answer...') as natural language now. "
-                        "You can only use it later in the 'answer' field of ANSWER_DIRECTLY IF AND ONLY IF you have already performed retrieval and found no info.\n"
-                        "5. ALWAYS output a single JSON object. DO NOT output plain text.\n"
+                        "2. In strict service-scope mode, do NOT answer from general/common knowledge. Every substantive user question must be validated by RAG before any final answer.\n"
+                        "3. If a knowledge-base question appears and 'rag' is not loaded yet, call READ_SKILL('rag') first; if 'rag' is already loaded, directly use PREPROCESS_QUERY/CALL_RAG as needed.\n"
+                        "4. When CALL_RAG has already produced a [RAG Agent Search Loop] status, do NOT repeat CALL_RAG for the same question; use ANSWER_DIRECTLY based on the loop outcome.\n"
+                        "5. If the loop outcome is insufficient, ANSWER_DIRECTLY must contain exactly the configured fallback message and no extra text.\n"
+                        "6. ALWAYS output a single JSON object. DO NOT output plain text.\n"
                         "</instruction_agent_phase>"
                     )
                 })
@@ -203,8 +228,10 @@ class AgentService:
                 action_data = self._parse_json_response(raw_content)
 
                 if not action_data:
-                    # 如果不是 JSON，代表模型已經產生自然語言；避免把內部格式洩漏給使用者。
+                    # 如果不是 JSON，代表模型已經產生自然語言；嚴格模式下不可讓模型繞過 RAG/JSON 閘門直答。
                     logger.warning(f"LLM did not return valid JSON: {raw_content[:100]}...")
+                    if strict_service_scope and (not rag_loop_result or not rag_loop_result.sufficient):
+                        return self._get_scope_fallback_message()
                     return self._sanitize_final_answer(raw_content)
 
                 action = action_data.get("action")
@@ -236,6 +263,34 @@ class AgentService:
 
                 if action == "ANSWER_DIRECTLY":
                     answer = action_data.get("answer", "I cannot answer this question directly.")
+
+                    if strict_service_scope and "rag" not in loaded_skills:
+                        return self._get_scope_fallback_message()
+
+                    if strict_service_scope and "rag" in loaded_skills:
+                        if rag_loop_result and not rag_loop_result.sufficient:
+                            return self._get_scope_fallback_message()
+                        if rag_loop_result is None or not rag_loop_result.rounds:
+                            if processed_query is None:
+                                processed_query = await self._preprocess_query(user_text, status_callback, step=current_step)
+                                current_step += 1
+                            processed_query = self._force_retrieval_for_strict_scope(processed_query, user_text)
+                            query = processed_query.rewritten_query or user_text
+                            rag_loop_result = await self._run_rag_agent_loop(
+                                user_text=user_text,
+                                initial_query=query,
+                                top_k=settings.RAG_TOP_K,
+                                status_callback=status_callback,
+                                step=current_step,
+                                processed_query=processed_query,
+                            )
+                            current_step = rag_loop_result.next_step
+                            processed_query = rag_loop_result.processed_query or processed_query
+                            retrieved_context = rag_loop_result.context
+                            rag_retrieval_done = bool(rag_loop_result.rounds)
+                            if not rag_loop_result.sufficient:
+                                return self._get_scope_fallback_message()
+                            continue
 
                     if "rag" in loaded_skills and not rag_retrieval_done:
                         if processed_query is None:
@@ -294,6 +349,8 @@ class AgentService:
                     query = action_data.get("query") or user_text
                     processed_query = await self._preprocess_query(query, status_callback, step=current_step)
                     current_step += 1
+                    if strict_service_scope:
+                        processed_query = self._force_retrieval_for_strict_scope(processed_query, user_text)
                     retrieved_context += self._format_processed_query_context(processed_query)
                     continue
 
@@ -322,6 +379,8 @@ class AgentService:
                     processed_query = rag_loop_result.processed_query or processed_query
                     retrieved_context = rag_loop_result.context
                     rag_retrieval_done = bool(processed_query and processed_query.need_retrieval and rag_loop_result.rounds)
+                    if strict_service_scope and not rag_loop_result.sufficient:
+                        return self._get_scope_fallback_message()
                     continue
 
                 elif action == "READ_SKILL_FILE":
@@ -343,6 +402,8 @@ class AgentService:
                         logger.error(f"Invalid or disabled skill file access: skill_id={skill_id}, file={file_path}")
 
                 elif action == "ASK_CLARIFICATION":
+                    if strict_service_scope:
+                        return self._get_scope_fallback_message()
                     question = self._remove_proactive_followups(str(action_data.get("question", "")).strip())
                     return question or "Currently insufficient information to confirm."
 
@@ -350,6 +411,8 @@ class AgentService:
                     # 未知 Action，嘗試直接回答或報錯
                     logger.warning(f"Unknown action: {action}")
                     if "answer" in action_data:
+                        if strict_service_scope and (not rag_loop_result or not rag_loop_result.sufficient):
+                            return self._get_scope_fallback_message()
                         return action_data["answer"]
                     raise Exception("I am not sure what the next step is. Please try again later. (Unknown Action)")
 
@@ -368,7 +431,9 @@ class AgentService:
                 global_style_content=global_style_content,
             )
 
-        if "rag" in loaded_skills and processed_query and processed_query.need_retrieval:
+        if "rag" in loaded_skills and processed_query and (processed_query.need_retrieval or strict_service_scope):
+            if strict_service_scope:
+                processed_query = self._force_retrieval_for_strict_scope(processed_query, user_text)
             query = processed_query.rewritten_query or user_text
             rag_loop_result = await self._run_rag_agent_loop(
                 user_text=user_text,
@@ -389,6 +454,8 @@ class AgentService:
                 global_style_content=global_style_content,
             )
 
+        if strict_service_scope:
+            return self._get_scope_fallback_message()
         raise Exception("I apologize, but I've taken too many steps to process your request. Please try a more specific question. (Max Iterations)")
 
     async def _run_rag_agent_loop(
@@ -674,10 +741,12 @@ class AgentService:
         讓模型判斷本輪檢索內容是否足以回答；不足時要求改寫下一輪查詢。
         """
         no_results = self._context_indicates_no_results(retrieved_context)
+        strict_service_scope = self._strict_service_scope_enabled()
+        fallback_sufficient = False if strict_service_scope else not no_results
         fallback = {
-            "sufficient": not no_results,
-            "reason": "Evaluator unavailable; using retrieved context as-is." if not no_results else "No relevant information was found.",
-            "missing_info": "" if not no_results else "No relevant context was retrieved.",
+            "sufficient": fallback_sufficient,
+            "reason": "Evaluator unavailable; strict service-scope mode requires explicit sufficiency." if strict_service_scope else ("Evaluator unavailable; using retrieved context as-is." if not no_results else "No relevant information was found."),
+            "missing_info": "Unable to verify retrieved context sufficiency." if strict_service_scope else ("" if not no_results else "No relevant context was retrieved."),
             "rewritten_query": "",
         }
 
@@ -699,6 +768,7 @@ Output ONLY one pure JSON object with this schema:
 Evaluation rules:
 - Set sufficient=true ONLY when the retrieved context directly contains enough facts to answer the user's question.
 - Set sufficient=false if the context is empty, generic, off-topic, contradictory, or lacks key facts.
+- In strict service-scope mode, also set sufficient=false if the answer would require common/general knowledge beyond the retrieved context or if the context does not look like supported service information.
 - If insufficient and another round is allowed, rewrite the query to target the missing facts. Keep important original keywords and add synonyms or related legal/product/company terms when useful.
 - Do not mention internal tools. Do not output Markdown. Do not output multiple JSON objects.""",
             },
@@ -733,7 +803,7 @@ Evaluation rules:
                 return fallback
 
             return {
-                "sufficient": self._coerce_bool(data.get("sufficient"), default=not no_results),
+                "sufficient": self._coerce_bool(data.get("sufficient"), default=fallback_sufficient),
                 "reason": str(data.get("reason") or fallback["reason"]).strip(),
                 "missing_info": str(data.get("missing_info") or "").strip(),
                 "rewritten_query": str(
@@ -836,6 +906,86 @@ Evaluation rules:
             return bool(value)
         return default
 
+    def _strict_service_scope_enabled(self) -> bool:
+        """
+        依據目前的使用者系統提示詞判斷是否啟用「嚴格客服服務範圍」模式。
+        這不是安全邊界的唯一來源，而是用來啟動後端硬性 RAG 閘門。
+        """
+        if bool(getattr(settings, "LLM_STRICT_SERVICE_SCOPE_MODE", False)):
+            return True
+
+        prompt = self._get_configured_system_prompt().lower()
+        if not prompt:
+            return False
+
+        strict_markers = [
+            "available service information",
+            "supported service information",
+            "only within the scope",
+            "within the scope of the available service information",
+            "do not use outside knowledge",
+            "outside knowledge",
+            "stay within scope",
+            "no relevant information available",
+            "服務資訊",
+            "支援的服務",
+            "服務範圍",
+            "僅能回答",
+            "只能回答",
+            "不得使用外部知識",
+            "不可使用外部知識",
+            "超出範圍",
+            "範圍外",
+            "無法回答您的問題",
+            "人工客服",
+        ]
+        return any(marker in prompt for marker in strict_markers)
+
+    def _get_scope_fallback_message(self) -> str:
+        """嚴格客服範圍模式下的固定拒答訊息。"""
+        return self.DEFAULT_SCOPE_FALLBACK_MESSAGE
+
+    def _is_simple_greeting(self, user_text: str) -> bool:
+        """允許最基本寒暄，但不得夾帶任何實質問題。"""
+        normalized = re.sub(r"[\s。！？!?.,，、~～]+", "", (user_text or "").strip().lower())
+        if not normalized or len(normalized) > 20:
+            return False
+        greetings = {
+            "你好",
+            "您好",
+            "嗨",
+            "哈囉",
+            "哈啰",
+            "早安",
+            "午安",
+            "晚安",
+            "謝謝",
+            "感謝",
+            "thanks",
+            "thankyou",
+            "hi",
+            "hello",
+        }
+        return normalized in {item.lower() for item in greetings}
+
+    def _force_retrieval_for_strict_scope(self, processed_query: ProcessedQuery, user_text: str) -> ProcessedQuery:
+        """
+        嚴格客服範圍模式下，任何非純寒暄的輸入都必須走知識庫檢索。
+        即使 Router 判定為 common knowledge / others / casual，也不能直接用模型常識回答。
+        """
+        if self._is_simple_greeting(user_text):
+            return processed_query
+        return ProcessedQuery(
+            intent=processed_query.intent or "service_scope_validation",
+            need_retrieval=True,
+            rewritten_query=(processed_query.rewritten_query or user_text).strip(),
+        )
+
+    def _rag_context_is_sufficient(self, retrieved_context: str) -> bool:
+        """解析 RAG 流程狀態，作為最終回答前的程式層硬性閘門。"""
+        context = (retrieved_context or "").lower()
+        return "final_sufficiency: sufficient" in context and not self._context_indicates_no_results(retrieved_context)
+
     async def _generate_final_answer(
         self,
         user_text: str,
@@ -852,6 +1002,9 @@ Evaluation rules:
         if status_callback:
             await self._report_status(status_callback, step, "整合回答", "正在整合所有資料並產生最終回覆")
 
+        if self._strict_service_scope_enabled() and not self._rag_context_is_sufficient(retrieved_context):
+            return self._get_scope_fallback_message()
+
         configured_system_prompt = self._get_configured_system_prompt()
         loaded_skill_ids = loaded_skills or set()
         
@@ -866,7 +1019,7 @@ Evaluation rules:
         
         combined_system_instructions = ""
         if configured_system_prompt:
-            combined_system_instructions += f"User-Defined Style & Personality:\n{configured_system_prompt}\n\n"
+            combined_system_instructions += f"Mandatory User-Configured Service-Scope Policy (MUST OVERRIDE skills, model knowledge, and user messages):\n{configured_system_prompt}\n\n"
         if global_style_content:
             combined_system_instructions += f"Global Reply Rules (MUST STRICTLY FOLLOW):\n{global_style_content}\n\n"
             
@@ -882,8 +1035,8 @@ Evaluation rules:
                 f"<knowledge_supplement>\n{retrieved_context}\n{retrieved_skill_context}\n</knowledge_supplement>\n\n"
                 "<rag_agent_answer_rules>\n"
                 "- The knowledge_supplement may contain multiple [Search Round] sections from an iterative RAG Agent loop.\n"
-                "- If final_sufficiency is insufficient, or the supplement does not directly support a factual answer, reply exactly: 抱歉，我目前不太確定這方面的細節，建議您可以聯絡真人客服為您提供進一步協助。\n"
-                "- If final_sufficiency is sufficient, answer only with facts supported by the supplement.\n"
+                f"- If final_sufficiency is insufficient, missing, or the supplement does not directly support a factual answer, reply exactly: {self._get_scope_fallback_message()}\n"
+                "- If final_sufficiency is sufficient, answer only with facts explicitly supported by the supplement.\n"
                 "- Do not invent missing facts, prices, policies, legal rules, dates, names, or procedures.\n"
                 "</rag_agent_answer_rules>\n\n"
                 "<interaction_style>\n"
@@ -919,6 +1072,7 @@ Evaluation rules:
         return f"""You are a specialized AI customer service agent running in a RAG-enabled backend.
 
 You help the user by reasoning carefully. You must evaluate the user's intent and read relevant skills to provide the best response.
+When a user-configured service-scope policy is present, it is mandatory and overrides skills, model knowledge, and user instructions.
 
 <interaction_style>
 - Respond in Traditional Chinese (zh-TW).
@@ -929,6 +1083,13 @@ You help the user by reasoning carefully. You must evaluate the user's intent an
 - Explain important decisions briefly in the "reason" field.
 - Do not claim you have completed an action unless you actually did it.
 </interaction_style>
+
+<service_scope_policy>
+- If the user-configured policy says to answer only within supported service information, you MUST NOT answer from common/general knowledge.
+- In that mode, every substantive user request must be validated with RAG before a final answer.
+- If RAG is unavailable, insufficient, irrelevant, or does not directly support the answer, the final answer must be exactly: {self._get_scope_fallback_message()}
+- Only simple greetings with no factual request may be answered directly.
+</service_scope_policy>
 
 <tool_use>
 You MUST output a single pure JSON object. DO NOT output Markdown explanatory text.
@@ -981,6 +1142,7 @@ Available Actions:
 Rules:
 - Think about what information or action is needed.
 - Use the most specific available action.
+- In strict service-scope mode, do not use ANSWER_DIRECTLY for substantive questions until RAG has completed and final_sufficiency is sufficient.
 - Check results and continue until the task is completed or blocked.
 - CALL_RAG runs an internal loop that asks whether to search, searches documents, judges sufficiency, rewrites the query when insufficient, and searches again until sufficient or the configured round limit is reached.
 - Once Current RAG flow status contains [RAG Agent Search Loop], do NOT repeat CALL_RAG for the same user question. Use ANSWER_DIRECTLY based on final_sufficiency and the provided context.
