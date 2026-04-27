@@ -65,8 +65,8 @@ class RAGManager:
         doc_id = str(uuid.uuid4())
         created_at = datetime.datetime.now().isoformat()
         
-        # 批量大小 (降低以避免部分 API 的 Token 限制或 403 錯誤)
-        batch_size = 16
+        # 批量大小 (提高批量以減少總請求數，從而緩解 RPM 限制)
+        batch_size = 32
         points = []
         
         # 分批處理 Chunks 以提高效率
@@ -76,8 +76,8 @@ class RAGManager:
             # 批量獲取向量
             denses, sparses = await embedding_service.get_embeddings_batch(batch_chunks)
             
-            # 增加微小延遲，避免過快觸發頻率限制
-            await asyncio.sleep(0.1)
+            # 增加延遲，避免過快觸發未驗證帳戶的 RPM 限制
+            await asyncio.sleep(1.0)
             
             for j, (chunk, dense, sparse) in enumerate(zip(batch_chunks, denses, sparses)):
                 chunk_index = i + j
