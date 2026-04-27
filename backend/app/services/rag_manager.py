@@ -101,9 +101,12 @@ class RAGManager:
                     }
                 })
         
-        # 批量存入 Qdrant
+        # 分批存入 Qdrant (避免 JSON Payload 過大觸發 400 錯誤)
+        qdrant_batch_size = 100
         if points:
-            vector_db_service.upsert_points(points)
+            for k in range(0, len(points), qdrant_batch_size):
+                batch_points = points[k:k + qdrant_batch_size]
+                vector_db_service.upsert_points(batch_points)
             
         # 同步存入 BM25 索引
         if settings.RAG_ENABLE_BM25 and points:
@@ -115,7 +118,10 @@ class RAGManager:
                 }
                 for p in points
             ]
-            bm25_service.add_documents(bm25_docs)
+            # BM25 通常是本地處理，但也建議分批
+            for k in range(0, len(bm25_docs), qdrant_batch_size):
+                batch_docs = bm25_docs[k:k + qdrant_batch_size]
+                bm25_service.add_documents(batch_docs)
             
         return {"doc_id": doc_id, "chunks_count": len(chunks)}
 
