@@ -45,7 +45,16 @@ class EmbeddingService:
                     headers=headers,
                     json=payload
                 )
-                response.raise_for_status()
+                if response.status_code != 200:
+                    error_msg = response.text
+                    try:
+                        error_json = response.json()
+                        if "message" in error_json:
+                            error_msg = error_json["message"]
+                    except:
+                        pass
+                    raise RuntimeError(f"Embedding API Error ({response.status_code}): {error_msg}")
+                
                 data = response.json()
                 
                 denses = []
