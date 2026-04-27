@@ -82,7 +82,7 @@ async def index_document(request: IndexRequest):
 
 @router.get("/upload-file")
 async def upload_file_info():
-    return {"message": "Please use POST to upload files.", "supported_formats": [".pdf", ".docx", ".txt", ".md"]}
+    return {"message": "Please use POST to upload files.", "supported_formats": [".pdf", ".docx", ".txt", ".md", ".json"]}
 
 @router.post("/upload-file")
 async def upload_file(
@@ -112,6 +112,15 @@ async def upload_file(
         elif filename.endswith(".docx"):
             doc = Document(io.BytesIO(content))
             text = "\n".join([para.text for para in doc.paragraphs])
+        elif filename.endswith(".json"):
+            import json
+            try:
+                data = json.loads(content.decode("utf-8"))
+                # 重新序列化為格式化字串，確保文字切分效果較好
+                text = json.dumps(data, indent=2, ensure_ascii=False)
+            except Exception as e:
+                logger.warning(f"JSON parsing failed for {filename}, falling back to plain text: {str(e)}")
+                text = content.decode("utf-8")
         else:
             # 預設當作文字檔處理
             text = content.decode("utf-8")
