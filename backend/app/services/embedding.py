@@ -38,8 +38,8 @@ class EmbeddingService:
             "model": "BAAI/bge-m3"
         }
 
-        max_retries = 3
-        retry_delay = 2.0  # 初始重試延遲（秒）
+        max_retries = 10
+        retry_delay = 5.0  # 初始重試延遲（秒）
 
         for attempt in range(max_retries + 1):
             async with httpx.AsyncClient(timeout=settings.EMBEDDING_REQUEST_TIMEOUT_SECONDS) as client:
